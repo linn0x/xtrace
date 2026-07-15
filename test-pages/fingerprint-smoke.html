@@ -1,0 +1,107 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>XTrace Fingerprint Smoke</title>
+<canvas id="c" width="240" height="80"></canvas>
+<pre id="out"></pre>
+<script>
+async function run() {
+  const out = document.getElementById("out");
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+
+  ctx.font = "18px sans-serif";
+  ctx.fillStyle = "#123456";
+  ctx.fillText("XTrace canvas smoke", 8, 32);
+  const imageData = ctx.getImageData(0, 0, 32, 32);
+  const dataUrl = canvas.toDataURL("image/png");
+
+  const random = new Uint8Array(16);
+  crypto.getRandomValues(random);
+  const randomUuidLength = crypto.randomUUID ? crypto.randomUUID().length : 0;
+
+  const nav = {
+    platform: navigator.platform,
+    webdriver: navigator.webdriver,
+    cookieEnabled: navigator.cookieEnabled,
+  };
+  const scr = {
+    width: screen.width,
+    height: screen.height,
+    colorDepth: screen.colorDepth,
+  };
+
+  const glCanvas = document.createElement("canvas");
+  glCanvas.width = 4;
+  glCanvas.height = 4;
+  const gl = glCanvas.getContext("webgl") || glCanvas.getContext("experimental-webgl");
+  const webgl = { available: Boolean(gl) };
+  if (gl) {
+    webgl.version = gl.getParameter(gl.VERSION);
+    webgl.extensions = gl.getSupportedExtensions();
+    webgl.debugExtension = Boolean(gl.getExtension("WEBGL_debug_renderer_info"));
+    const pixels = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    webgl.pixelBytes = pixels.length;
+  }
+
+  const audio = {};
+  const AudioCtor = window.AudioContext || window.webkitAudioContext;
+  if (AudioCtor) {
+    const audioContext = new AudioCtor();
+    const analyser = audioContext.createAnalyser();
+    const oscillator = audioContext.createOscillator();
+    oscillator.connect(analyser);
+    oscillator.start();
+    oscillator.stop(audioContext.currentTime + 0.01);
+    audio.sampleRate = audioContext.sampleRate;
+    audio.fftSize = analyser.fftSize;
+    await audioContext.close();
+  }
+  if (window.OfflineAudioContext) {
+    const offlineContext = new OfflineAudioContext(1, 128, 44100);
+    audio.offlineSampleRate = offlineContext.sampleRate;
+  }
+
+  const intlFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    hour12: false,
+  });
+  const intl = intlFormatter.resolvedOptions();
+
+  const permission = navigator.permissions
+    ? await navigator.permissions.query({ name: "geolocation" })
+        .then((status) => status.state)
+        .catch((error) => error.name)
+    : "unavailable";
+  const mediaDevices = navigator.mediaDevices
+    ? await navigator.mediaDevices.enumerateDevices()
+        .then((devices) => devices.length)
+        .catch((error) => error.name)
+    : "unavailable";
+  let rtcState = "unavailable";
+  if (window.RTCPeerConnection) {
+    const peer = new RTCPeerConnection();
+    rtcState = peer.connectionState;
+    peer.close();
+  }
+
+  out.textContent = JSON.stringify({
+    imageDataLength: imageData.data.length,
+    dataUrlPrefix: dataUrl.slice(0, 22),
+    randomBytes: Array.from(random).length,
+    randomUuidLength,
+    nav,
+    scr,
+    webgl,
+    audio,
+    intl,
+    permission,
+    mediaDevices,
+    rtcState,
+  }, null, 2);
+}
+
+run().catch((error) => {
+  document.getElementById("out").textContent = error.stack || String(error);
+});
+</script>

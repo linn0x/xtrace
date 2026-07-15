@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>XTrace extended fingerprint smoke</title>
+<style>body{font:14px/1.5 system-ui;margin:24px}li{white-space:pre}.ok{color:#0a7}.err{color:#c33}</style>
+<h1>XTrace extended fingerprint smoke</h1>
+<p>Exercises every fingerprint API added in the 2026-07 hook expansion so each one emits a trace event.</p>
+<canvas id="c" width="220" height="90" style="border:1px solid #ccc"></canvas>
+<ul id="out"></ul>
+<script>
+const out = document.getElementById('out');
+function probe(name, fn) {
+  const li = document.createElement('li');
+  try { fn(); li.className = 'ok'; li.textContent = '✔ ' + name; }
+  catch (e) { li.className = 'err'; li.textContent = '✘ ' + name + ' — ' + e; }
+  out.appendChild(li);
+}
+
+probe('Canvas measureText / font', () => {
+  const x = document.getElementById('c').getContext('2d');
+  x.font = '18px Arial';
+  x.fillText('fingerprint', 8, 40);
+  x.measureText('fingerprint me');
+});
+probe('Canvas toBlob', () => document.getElementById('c').toBlob(() => {}));
+probe('WebGL getContextAttributes / getShaderPrecisionFormat', () => {
+  const gl = document.createElement('canvas').getContext('webgl');
+  gl.getContextAttributes();
+  gl.getShaderPrecisionFormat(gl.VERTEX_SHADER, gl.HIGH_FLOAT);
+});
+probe('Screen avail* / pixelDepth', () => {
+  void screen.availWidth; void screen.availHeight; void screen.pixelDepth;
+});
+probe('Window.devicePixelRatio', () => { void window.devicePixelRatio; });
+probe('Navigator hardwareConcurrency / deviceMemory / plugins', () => {
+  void navigator.hardwareConcurrency;
+  void navigator.deviceMemory;
+  void navigator.plugins.length;
+  navigator.plugins.item(0);
+});
+probe('NavigatorUAData.getHighEntropyValues', () => {
+  if (navigator.userAgentData)
+    navigator.userAgentData.getHighEntropyValues(['architecture', 'model', 'platformVersion', 'bitness']);
+  else throw 'userAgentData unavailable';
+});
+probe('NetworkInformation effectiveType / rtt / downlink', () => {
+  const c = navigator.connection;
+  if (!c) throw 'navigator.connection unavailable';
+  void c.effectiveType; void c.rtt; void c.downlink;
+});
+probe('WebAudio readout (OfflineAudioContext / Analyser / AudioBuffer)', () => {
+  const oac = new OfflineAudioContext(1, 44100, 44100);
+  oac.createBuffer(1, 44100, 44100).getChannelData(0);
+  const an = oac.createAnalyser();
+  an.getByteFrequencyData(new Uint8Array(an.frequencyBinCount));
+  an.getFloatFrequencyData(new Float32Array(an.frequencyBinCount));
+  oac.startRendering();
+});
+probe('SpeechSynthesis.getVoices', () => { speechSynthesis.getVoices(); });
+probe('RTCPeerConnection createOffer / createDataChannel', () => {
+  const pc = new RTCPeerConnection();
+  pc.createDataChannel('probe');
+  pc.createOffer();
+});
+
+document.title = 'DONE (' + out.querySelectorAll('.err').length + ' errors)';
+</script>

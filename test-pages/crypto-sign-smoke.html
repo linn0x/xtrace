@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>crypto sign smoke</title>
+<body>
+<p>Generic "signer": JSON payload -> TextEncoder -> SHA-256 -> base64, emitted as a request param.
+Exercises the plaintext boundary the injected API hooks capture.</p>
+<pre id="out"></pre>
+<script>
+async function sign() {
+  const payload = JSON.stringify({ user: "alice", nonce: Math.random().toString(36).slice(2) });
+  const plaintext = payload + "|SECRET_SIGNING_KEY";
+  const bytes = new TextEncoder().encode(plaintext);        // <- plaintext into the hash
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+  const sig = btoa(hex.slice(0, 24));
+  document.getElementById("out").textContent = "sig=" + sig;
+  // ship it like a signed request
+  fetch("/collect?payload=" + encodeURIComponent(payload) + "&X-Sign=" + encodeURIComponent(sig))
+    .catch(() => {});
+}
+setInterval(sign, 1200);
+sign();
+</script>
+</body>

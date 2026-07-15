@@ -1,0 +1,412 @@
+:root {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --line: #d8dde6;
+  --panel: #ffffff;
+  --text: #17202a;
+  --muted: #65758b;
+  --accent: #0f766e;
+  --accent-strong: #115e59;
+  --danger: #b42318;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  height: 32px;
+  padding: 0 12px;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+button:disabled {
+  opacity: 0.45;
+}
+
+input,
+select {
+  width: 100%;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 9px;
+  background: #fff;
+  color: var(--text);
+}
+
+.app-shell {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.run-panel {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.field {
+  min-width: 0;
+}
+
+.field.wide {
+  grid-column: span 2;
+}
+
+.field.small {
+  grid-column: span 1;
+}
+
+.field label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.actions {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: span 2;
+}
+
+.status-band {
+  display: grid;
+  grid-template-columns: 120px 100px minmax(220px, 0.9fr) minmax(200px, 1fr) minmax(200px, 1fr);
+  gap: 1px;
+  border-bottom: 1px solid var(--line);
+  background: var(--line);
+}
+
+.status-band div {
+  min-width: 0;
+  padding: 8px 12px;
+  background: #fbfcfd;
+}
+
+.status-band span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.status-band strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.status-band strong.gate-passed {
+  color: var(--accent-strong);
+}
+
+.status-band strong.gate-pending {
+  color: #8a5a00;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 300px minmax(320px, 1fr) minmax(300px, 0.9fr);
+  min-height: 0;
+}
+
+.logs-panel,
+.tail-panel,
+.detail-panel {
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.detail-panel {
+  border-right: 0;
+}
+
+h2 {
+  margin: 0;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.log-list,
+.events {
+  height: calc(100vh - 173px);
+  overflow: auto;
+}
+
+.log-row,
+.event-row {
+  display: grid;
+  gap: 4px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #edf0f4;
+  cursor: default;
+}
+
+.log-row:hover,
+.event-row:hover {
+  background: #f4f8f7;
+}
+
+.row-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.row-main strong,
+.row-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tail-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(160px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding-right: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tail-toolbar h2 {
+  border-bottom: 0;
+}
+
+.detail-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-tabs button.active {
+  background: #e6f4f1;
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+#detail {
+  height: calc(100vh - 149px);
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.json-detail {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.report-detail {
+  white-space: normal;
+  word-break: normal;
+  font: 12px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.report-view {
+  display: grid;
+  gap: 12px;
+}
+
+.report-section {
+  display: grid;
+  gap: 8px;
+}
+
+.report-section h3 {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.report-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.report-metric,
+.report-card,
+.report-row {
+  border: 1px solid #edf0f4;
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+
+.report-metric {
+  min-width: 0;
+  padding: 8px;
+}
+
+.report-metric span,
+.card-meta,
+.source-line,
+.empty-inline {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.report-metric strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-preview {
+  max-height: 96px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid #e6ecef;
+  border-radius: 6px;
+  background: #fff;
+  padding: 7px;
+  color: #202936;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.report-card {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+}
+
+.card-head,
+.candidate-title,
+.report-row {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.card-head strong,
+.candidate-title strong,
+.report-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-head span,
+.candidate-title span,
+.report-row span {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-list {
+  display: grid;
+  gap: 6px;
+}
+
+.candidate-window {
+  display: grid;
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid #e6ecef;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.event-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.event-chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid #dbe4e8;
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: #f7faf9;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.event-chip.candidate {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  background: #e6f4f1;
+}
+
+.report-row {
+  padding: 8px;
+}
+
+@media (max-width: 980px) {
+  .run-panel,
+  .status-band,
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .log-list,
+  .events,
+  #detail {
+    height: 260px;
+  }
+
+  .report-metrics {
+    grid-template-columns: 1fr;
+  }
+}

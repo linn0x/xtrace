@@ -1,0 +1,18 @@
+chromium/
+depot_tools/
+logs/
+profiles/
+# Local-only stress harnesses / notes (not part of the open-source package)
+local/
+*.log
+*.ndjson
+*.tmp
+.DS_Store
+out/
+node_modules/
+__pycache__/
+.pytest_cache/
+
+# Local-only reverse & token simulators (keep on the workstation only)
+scripts/simulate_*.py
+scripts/analyze_sign_generation.py

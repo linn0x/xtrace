@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>XTrace WASM boundary smoke</title>
+<body>
+<p>Exercises the WebAssembly JS-API surface so the XTrace WASM boundary hooks emit.</p>
+<pre id="out"></pre>
+<script>
+// Minimal valid module: magic (\0asm) + version 1. Enough to drive
+// compile / Module / instantiate; Memory is exercised separately.
+const bytes = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+const log = (m) => { document.getElementById("out").textContent += m + "\n"; };
+
+(async () => {
+  try {
+    await WebAssembly.compile(bytes);      // -> WebAssembly.compile
+    log("compile ok");
+    new WebAssembly.Module(bytes);         // -> WebAssembly.Module
+    log("Module ok");
+    await WebAssembly.instantiate(bytes);  // -> WebAssembly.instantiate + Instance
+    log("instantiate ok");
+    new WebAssembly.Memory({ initial: 1 }); // -> WebAssembly.Memory
+    log("Memory ok");
+    document.title = "wasm done";
+  } catch (e) {
+    log("ERR " + e);
+    document.title = "wasm error";
+  }
+})();
+</script>
+</body>

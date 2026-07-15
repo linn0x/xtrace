@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>XTrace Worker Fetch Smoke</title>
+<pre id="out"></pre>
+<script>
+(async () => {
+  const out = document.getElementById("out");
+  out.textContent = "starting";
+  const worker = new Worker("/worker-fetch-smoke.js");
+  const result = await new Promise((resolve) => {
+    worker.onmessage = (event) => resolve(event.data);
+    worker.onerror = (event) => resolve({error: event.message});
+    worker.postMessage({});
+  });
+  worker.terminate();
+  out.textContent = JSON.stringify(result, null, 2);
+})();
+</script>

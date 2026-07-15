@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>XTrace JSON Parse Smoke</title>
+<pre id="out"></pre>
+<script>
+(() => {
+  const source = JSON.stringify({source: "X-Signature=abc&X-Secondary-Signature=def&vm=opcode"});
+  const parsed = JSON.parse(source);
+  document.getElementById("out").textContent = parsed.source;
+})();
+</script>

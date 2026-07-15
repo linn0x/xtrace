@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>JS-crypto input smoke</title>
+<body>
+<p>Simulates a CryptoJS-style signer: reads a long message char-by-char via
+charCodeAt (Utf8.parse), "hashes" it, and ships the result. Exercises the
+injected String.scan capture of the digest/AES input plaintext.</p>
+<pre id="out"></pre>
+<script>
+// CryptoJS Utf8.parse-style: message -> word array, read via charCodeAt
+function toWords(msg) {
+  const words = [];
+  for (let i = 0; i < msg.length; i++) {
+    words[i >>> 2] |= (msg.charCodeAt(i) & 0xff) << (24 - (i % 4) * 8);
+  }
+  return words;
+}
+function fakeHash(msg) {
+  const w = toWords(msg);
+  let h = 0x811c9dc5;
+  for (const x of w) h = ((h ^ x) * 16777619) >>> 0;
+  return h.toString(16).padStart(8, "0");
+}
+let i = 0;
+setInterval(() => {
+  const payload = JSON.stringify({ user: "alice", seq: i++, blob: "x".repeat(80) });
+  const message = payload + "|JS_CRYPTO_SIGN_KEY";   // > SCAN_MIN chars
+  const sig = fakeHash(message);
+  document.getElementById("out").textContent = "sig=" + sig;
+  fetch("/collect?X-Sign=" + sig).catch(() => {});
+}, 1000);
+</script>
+</body>

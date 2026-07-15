@@ -1,0 +1,123 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>XTrace Business API Smoke</title>
+<pre id="out"></pre>
+<script>
+(async () => {
+  const out = document.getElementById("out");
+  const results = {};
+
+  function makeDemoTraceMarker(seed) {
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(seed);
+    const view = new DataView(bytes.buffer);
+    const vm = {offset: 0, mixed: 0x811c9dc5};
+    const handlers = [
+      function readWord(state) { return view.getUint32(state.offset, true); },
+      function mixWord(state, word) { state.mixed = Math.imul(state.mixed ^ word, 16777619) >>> 0; return state.mixed; },
+      function mixTail(state, index) { state.mixed = Math.imul(state.mixed ^ bytes[index], 16777619) >>> 0; return state.mixed; }
+    ];
+    let offset = 0;
+    for (; offset + 4 <= bytes.byteLength; offset += 4) {
+      vm.offset = offset;
+      const word = Reflect.apply(handlers[0], null, [vm]);
+      Function.prototype.call.call(handlers[1], null, vm, word); Function.prototype.apply.call(function applyProbe(state) { return state.mixed; }, null, [vm]);
+    }
+    for (; offset < bytes.byteLength; offset += 1) {
+      Function.prototype.apply.call(handlers[2], null, [vm, offset]);
+    }
+    return `demo-${((vm.mixed & 0xffff) ^ (vm.mixed >>> 16)).toString(16)}`;
+  }
+
+  const material = [
+    location.pathname,
+    navigator.userAgent.length,
+    screen.width,
+    screen.height,
+    "business-api-smoke"
+  ].join("|");
+  const demoMarker = makeDemoTraceMarker(material);
+  results.demoMarker = demoMarker;
+
+  const params = new URLSearchParams();
+  params.set("client_time", "1");
+  params.set("app_id", "1988");
+  params.set("app_name", "demo_web");
+  params.set("browser_language", navigator.language || "unknown");
+  params.set("browser_platform", navigator.platform || "unknown");
+  params.set("count", "30");
+  params.set("device_platform", "web_pc");
+  params.set("screen_height", String(screen.height || 0));
+  params.set("screen_width", String(screen.width || 0));
+  params.set("source", "business-api-smoke");
+  params.set("sessionToken", `query-${demoMarker}`);
+  params.set("X-Signature", demoMarker);
+
+  const apiUrl = new URL("/api/recommend/item_list/", location.href);
+  apiUrl.search = params.toString();
+  results.apiUrl = apiUrl.href;
+  results.itemListQueryKeys = Array.from(apiUrl.searchParams.keys()).sort();
+
+  const itemHeaders = new Headers();
+  itemHeaders.set("X-XTrace-Smoke", "item-list-fetch");
+  itemHeaders.set("X-Session-Token", `header-${demoMarker}`);
+  itemHeaders.set("X-Signature", demoMarker);
+
+  const request = new Request(apiUrl.href, {
+    method: "GET",
+    headers: itemHeaders
+  });
+  results.requestUrl = request.url;
+  results.requestHeader = request.headers.get("X-XTrace-Smoke");
+  results.requestSessionTokenHeader = request.headers.get("X-Session-Token");
+  results.requestXSignatureHeader = request.headers.get("X-Signature");
+
+  const fetchResponse = await fetch(request);
+  const fetchClone = fetchResponse.clone();
+  results.fetchType = fetchResponse.type;
+  results.fetchResponseUrl = fetchResponse.url;
+  results.fetchRedirected = fetchResponse.redirected;
+  results.fetchStatus = fetchResponse.status;
+  results.fetchOk = fetchResponse.ok;
+  results.fetchStatusText = fetchResponse.statusText;
+  results.fetchContentType = fetchResponse.headers.get("content-type") || "";
+  results.fetchResponseHeaderEntries = Array.from(fetchResponse.headers.entries());
+  results.fetchCloneStatus = fetchClone.status;
+  const fetchJson = await fetchResponse.json();
+  results.fetchItems = fetchJson.items.length;
+  results.fetchRoute = fetchJson.route;
+  results.itemListEchoedQueryKeys = Object.keys(fetchJson.query).sort();
+  results.itemListRequestHeaderNames = fetchJson.request_headers
+    .map((header) => header.name.toLowerCase())
+    .sort();
+  results.itemListCustomHeadersReachedServer =
+    results.itemListRequestHeaderNames.includes("x-signature") &&
+    results.itemListRequestHeaderNames.includes("x-session-token") &&
+    results.itemListRequestHeaderNames.includes("x-xtrace-smoke");
+
+  await new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    const xhrUrl = new URL("/api/recommend/item_list/", location.href);
+    xhrUrl.searchParams.set("transport", "xhr");
+    xhrUrl.searchParams.set("cursor", "2");
+    xhrUrl.searchParams.set("X-Signature", demoMarker);
+    xhr.open("POST", xhrUrl.href, true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.setRequestHeader("X-XTrace-Smoke", "business-api-xhr");
+    xhr.onloadend = () => {
+      results.xhrStatus = xhr.status;
+      try {
+        const payload = JSON.parse(xhr.responseText);
+        results.xhrRoute = payload.route;
+        results.xhrBodySize = payload.body_size;
+      } catch (error) {
+        results.xhrError = String(error);
+      }
+      resolve();
+    };
+    xhr.send(JSON.stringify({cursor: "2", body_marker: "xtrace"}));
+  });
+
+  out.textContent = JSON.stringify(results, null, 2);
+})();
+</script>

@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WASM boundary smoke</title>
+<body>
+<p>Instantiates a tiny WASM module exporting add(i32,i32) and calls it, so the
+injected boundary hooks capture the per-call JS-&gt;WASM args and return.</p>
+<pre id="out"></pre>
+<script>
+// Minimal module: (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add)
+const bytes = new Uint8Array([
+  0, 97, 115, 109, 1, 0, 0, 0,            // magic + version
+  1, 7, 1, 96, 2, 127, 127, 1, 127,       // type: (i32,i32)->i32
+  3, 2, 1, 0,                             // function: one func of type 0
+  7, 7, 1, 3, 97, 100, 100, 0, 0,         // export "add" -> func 0
+  10, 9, 1, 7, 0, 32, 0, 32, 1, 106, 11,  // code: local.get 0/1; i32.add
+]);
+(async () => {
+  const { instance } = await WebAssembly.instantiate(bytes, {});
+  let i = 0;
+  setInterval(() => {
+    const a = 19 + i, b = 23 + i;
+    const r = instance.exports.add(a, b);
+    document.getElementById("out").textContent = `add(${a},${b}) = ${r}`;
+    i++;
+  }, 1000);
+})();
+</script>
+</body>

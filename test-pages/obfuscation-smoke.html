@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>XTrace Obfuscation Smoke</title>
+</head>
+<body>
+<h1>XTrace Obfuscation Smoke</h1>
+<script>
+  const bucket = ["\x6e\x61\x76\x69\x67\x61\x74\x6f\x72", "webdriver", "debug"];
+  window[bucket[0] + "_probe"] = navigator[bucket[1]];
+  while (!![]) {
+    switch (bucket[2]) {
+      case "debug":
+        Function("return 1")();
+        break;
+      default:
+        break;
+    }
+    break;
+  }
+  eval("window.__xtrace_obf_eval = navigator.webdriver === false || navigator.webdriver === true");
+  setTimeout("window.__xtrace_obf_timeout = 1", 0);
+  const vmpBytes = [1,65,1,66,2,0,1,67,1,68,1,69,1,70,1,71,1,72,1,73,1,74,1,75,1,76,1,77,1,78,1,79,1,80];
+  const vmpHandlers = [
+    function(vm) { vm.out += String.fromCharCode(vmpBytes[vm.pc++]); },
+    function(vm) { return vmpHandlers[vmpBytes[vm.pc++]].call(null, vm); }
+  ];
+  const vm = {pc: 0, out: ""};
+  while (vm.pc < 4) {
+    switch (vmpBytes[vm.pc++]) {
+      case 1:
+        vmpHandlers[0](vm);
+        break;
+      case 2:
+        Reflect.apply(vmpHandlers[1], null, [vm]);
+        break;
+      default:
+        vm.pc = vmpBytes.length;
+    }
+  }
+  window.__xtrace_vmp_smoke = new TextDecoder().decode(new TextEncoder().encode(atob(btoa(vm.out))));
+  const script = document.createElement("script");
+  script.text = "window.__xtrace_inline_dynamic = 'inline asset'";
+  document.body.appendChild(script);
+</script>
+</body>
+</html>

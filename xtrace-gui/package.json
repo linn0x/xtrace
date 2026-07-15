@@ -1,0 +1,14 @@
+{
+  "name": "xtrace-gui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "XTrace Electron workbench for local Chromium trace runs.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "electron": "^42.5.0"
+  }
+}

@@ -1,0 +1,426 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>XTrace Reverse Smoke</title>
+<pre id="out"></pre>
+<script>
+(async () => {
+  const out = document.getElementById("out");
+  const results = {};
+
+  localStorage.setItem("xtrace-local", "local-value");
+  results.local = localStorage.getItem("xtrace-local");
+  localStorage.setItem("xtrace-large", "L".repeat(300000));
+  results.largeLength = localStorage.getItem("xtrace-large").length;
+  sessionStorage.setItem("xtrace-session", "session-value");
+  results.session = sessionStorage.getItem("xtrace-session");
+  localStorage.key(0);
+  localStorage.removeItem("xtrace-local");
+  localStorage.removeItem("xtrace-large");
+  sessionStorage.clear();
+
+  document.cookie = "xtrace_cookie=smoke; path=/; SameSite=Lax";
+  results.cookie = document.cookie;
+
+  const params = new URLSearchParams("existing=1");
+  params.append("xtrace_append", "append-value");
+  params.set("existing", "updated");
+  params.set("xtrace_set", "set-value");
+  results.paramsGet = params.get("existing");
+  results.paramsAll = params.getAll("existing").length;
+  results.paramsHas = params.has("xtrace_set");
+  results.paramsEntries = Array.from(params.entries());
+  params.delete("xtrace_append");
+  params.sort();
+  results.params = params.toString();
+
+  const url = new URL("/fingerprint-smoke.html?initial=1", location.href);
+  url.searchParams.set("linked_set", "1");
+  url.searchParams.append("linked_append", "2");
+  url.searchParams.sort();
+  results.urlSearchBefore = url.search;
+  url.search = "?url_search=1";
+  url.href = new URL("/fingerprint-smoke.html?url_href=1", location.href).href;
+  results.url = url.href;
+
+  const headers = new Headers({"X-XTrace-Constructed": "yes"});
+  headers.append("X-XTrace-Appended", "append-value");
+  headers.set("X-XTrace-Constructed", "updated");
+  headers.delete("X-XTrace-Appended");
+  headers.delete("X-XTrace-Missing");
+  results.header = headers.get("X-XTrace-Constructed");
+  results.headerHas = headers.has("X-XTrace-Constructed");
+  results.headerMissing = headers.has("X-XTrace-Missing");
+
+  const formData = new FormData();
+  formData.append("X-Signature", "form-secret-one");
+  formData.append("xtrace_multi", "one");
+  formData.append("xtrace_multi", "two");
+  formData.set("X-Secondary-Signature", "form-secret-two");
+  results.formDataGet = formData.get("X-Secondary-Signature");
+  results.formDataAll = formData.getAll("xtrace_multi").length;
+  results.formDataHas = formData.has("X-Signature");
+  results.formDataEntries = Array.from(formData.entries()).map(([name, value]) => [
+    name,
+    typeof value === "string" ? value : value.name
+  ]);
+  formData.delete("xtrace_multi");
+  results.formDataDeleted = !formData.has("xtrace_multi");
+  const formDataRequest = new Request("/api/feed/list", {
+    method: "POST",
+    body: formData
+  });
+  results.formDataRequestUrl = formDataRequest.url;
+
+  const encoded = btoa("xtrace-vmp");
+  results.base64 = atob(encoded);
+  const encoder = new TextEncoder();
+  const encodedBytes = encoder.encode("vmp-bytecode");
+  const encodeIntoDestination = new Uint8Array(32);
+  results.encodeInto = encoder.encodeInto("vmp-registers", encodeIntoDestination).written;
+  const decoder = new TextDecoder("utf-8");
+  results.decoded = decoder.decode(encodedBytes);
+  const buffer = new ArrayBuffer(32);
+  const view = new DataView(buffer);
+  view.setInt8(5, -7);
+  view.setInt16(6, -321, true);
+  view.setUint8(1, 0x12);
+  view.setUint16(2, 0x3456, true);
+  view.setUint32(0, 0x12345678, true);
+  view.setInt32(8, -1234, true);
+  view.setBigUint64(0, 0x123456789abcdef0n, true);
+  view.setBigInt64(8, -987654321n, true);
+  view.setFloat16(20, 1.5, true);
+  view.setFloat32(16, 3.25, true);
+  view.setFloat64(24, 6.5, true);
+  const slicedBuffer = buffer.slice(4, 20);
+  results.arrayBufferSliceBytes = slicedBuffer.byteLength;
+  results.viewSignedByte = view.getInt8(5);
+  results.viewSignedWord = view.getInt16(6, true);
+  results.viewByte = view.getUint8(1);
+  results.viewWord = view.getUint16(2, true);
+  results.viewValue = view.getUint32(0, true);
+  results.viewSigned = view.getInt32(8, true);
+  results.viewBigUnsigned = view.getBigUint64(0, true).toString(16);
+  results.viewBigSigned = view.getBigInt64(8, true).toString();
+  results.viewFloat16 = view.getFloat16(20, true);
+  results.viewFloat32 = view.getFloat32(16, true);
+  results.viewFloat64 = view.getFloat64(24, true);
+  results.charCode = "xtrace-vmp".charCodeAt(0);
+  results.charCodeMissing = "xtrace-vmp".charCodeAt(999);
+  results.codePoint = "xtrace-vmp".codePointAt(0);
+  results.codePointMissing = "xtrace-vmp".codePointAt(999);
+  results.charAt = "xtrace-vmp".charAt(0);
+  results.charAtMissing = "xtrace-vmp".charAt(999);
+  results.stringAt = "xtrace-vmp".at(1);
+  results.stringAtMissing = "xtrace-vmp".at(999);
+  results.fromCharCode = String.fromCharCode(88, 84, 82);
+  results.fromCodePoint = String.fromCodePoint(88, 84, 82);
+  const transformSource = "X-Signature=abc&X-Secondary-Signature=def&vm=opcode";
+  results.stringSlice = transformSource.slice(0, 7);
+  results.stringSubstring = transformSource.substring(8, 11);
+  results.stringSubstr = transformSource.substr(8, 3);
+  results.numberToStringHex = results.charCode.toString(16);
+  results.bigIntToStringHex = 0x1234n.toString(16);
+  results.stringPadStart = results.charCode.toString(16).padStart(4, "0");
+  results.stringPadEnd = "sig".padEnd(6, "_");
+  results.stringRepeat = "xy".repeat(3);
+  results.stringStartsWith = transformSource.startsWith("X-Signature");
+  results.stringEndsWith = transformSource.endsWith("opcode");
+  results.stringTrim = ` ${transformSource} `.trim();
+  results.stringTrimStart = ` ${transformSource}`.trimStart();
+  results.stringTrimEnd = `${transformSource} `.trimEnd();
+  results.stringIndexOf = transformSource.indexOf("X-Secondary-Signature");
+  results.stringLastIndexOf = transformSource.lastIndexOf("X-");
+  results.stringIncludes = transformSource.includes("opcode");
+  results.stringReplace = transformSource.replace("abc", "redacted");
+  results.stringReplaceAll = transformSource.replaceAll("X-", "Y-");
+  results.stringSplitLength = transformSource.split("&").length;
+  results.stringConcat = transformSource.concat("&X-Trace=concat");
+  const signatureRegex = /X-(Signature|Secondary-Signature)=([^&]+)/g;
+  results.regexTest = /opcode/.test(transformSource);
+  results.regexExec = signatureRegex.exec(transformSource)?.[1] || "";
+  results.regexSearch = transformSource.search(/X-Secondary-Signature=/);
+  results.regexMatch = transformSource.match(/X-(Bogus|Gnarly)=([^&]+)/)?.[2] || "";
+  results.regexSplitLength = transformSource.split(/&/).length;
+  results.regexReplace = transformSource.replace(/X-(Bogus)=([^&]+)/, "X-$1=patched");
+  results.jsonRoundTrip = JSON.parse(JSON.stringify({source: transformSource})).source;
+  const urlMaterial = "q=video%20id&page=1";
+  results.encodeURI = encodeURI(`https://example.test/search?${urlMaterial}`);
+  results.encodeURIComponent = encodeURIComponent(urlMaterial);
+  results.decodeURI = decodeURI(results.encodeURI);
+  results.decodeURIComponent = decodeURIComponent(results.encodeURIComponent);
+  results.numberParseInt = Number.parseInt("ff", 16);
+  results.numberParseFloat = Number.parseFloat("3.14159sig");
+  results.imul = Math.imul(results.charCode, 2654435761);
+  const typed = new Uint8Array([3, 1, 4, 1, 5, 9]);
+  results.typedAt = typed.at(2);
+  results.typedIndexOf = typed.indexOf(4);
+  results.typedIncludes = typed.includes(9);
+  results.typedIncludesMissing = typed.includes(255);
+  results.typedLastIndexOf = typed.lastIndexOf(1);
+  results.typedLastIndexOfMissing = typed.lastIndexOf(255);
+  const typedPredicateContext = {needle: 5};
+  results.typedFind = typed.find(function(value) { return value === this.needle; }, typedPredicateContext);
+  results.typedFindIndex = typed.findIndex(function(value) { return value === this.needle; }, typedPredicateContext);
+  results.typedFindLast = typed.findLast(function(value) { return value <= 1; }, typedPredicateContext);
+  results.typedFindLastIndex = typed.findLastIndex(function(value) { return value <= 1; }, typedPredicateContext);
+  results.typedReduce = typed.reduce((acc, value) => acc + value, 0);
+  results.typedReduceRight = typed.reduceRight((acc, value) => acc * 31 + value, 7);
+  results.typedFilterLength = typed.filter(function(value) { return value >= this.needle; }, typedPredicateContext).length;
+  results.typedEvery = typed.every(function(value) { return value > 0; }, typedPredicateContext);
+  results.typedSome = typed.some(function(value) { return value === this.needle; }, typedPredicateContext);
+  let typedForEachTotal = 0;
+  typed.forEach(function(value) { typedForEachTotal += value + this.needle; }, typedPredicateContext);
+  results.typedForEachTotal = typedForEachTotal;
+  results.typedSliceLength = typed.slice(1, 4).length;
+  const typedSubarray = typed.subarray(1, 5);
+  const typedSetTarget = new Uint8Array(12);
+  typedSetTarget.set(encodedBytes.subarray(0, 4), 2);
+  typedSetTarget.set(typedSubarray, 6);
+  typedSetTarget.copyWithin(0, 2, 6);
+  typedSetTarget.fill(7, 10, 12);
+  results.typedSubarrayLength = typedSubarray.length;
+  results.typedSetJoin = typedSetTarget.join("-");
+  results.typedCopyWithinHead = typedSetTarget.at(0);
+  results.typedFillTail = typedSetTarget.at(11);
+  typedSetTarget.reverse();
+  results.typedReverseHead = typedSetTarget.at(0);
+  typedSetTarget.sort();
+  results.typedSortHead = typedSetTarget.at(0);
+  results.typedJoin = typed.join("-");
+  const table = ["op", "load", "xor", "store", "ret"];
+  results.tableAt = table.at(2);
+  results.tableAtMissing = table.at(999);
+  results.tableIndexOf = table.indexOf("xor");
+  results.tableIncludes = table.includes("store");
+  results.tableIncludesMissing = table.includes("missing");
+  results.tableLastIndexOf = table.lastIndexOf("xor");
+  results.tableLastIndexOfMissing = table.lastIndexOf("missing");
+  const tablePredicateContext = {target: "xor"};
+  results.tableFind = table.find(function(op) { return op === this.target; }, tablePredicateContext);
+  results.tableFindIndex = table.findIndex(function(op) { return op === this.target; }, tablePredicateContext);
+  results.tableFindLast = table.findLast(function(op) { return op.length === 3; }, tablePredicateContext);
+  results.tableFindLastIndex = table.findLastIndex(function(op) { return op.length === 3; }, tablePredicateContext);
+  results.tableReduce = table.reduce((acc, op) => `${acc}:${op}`, "seed");
+  results.tableReduceRight = table.reduceRight((acc, op) => `${acc}:${op}`, "seed");
+  results.tableMap = table.map(op => `${op}:mapped`).join(",");
+  results.tableFilter = table.filter(op => op.length === 3).join(",");
+  results.tableFlat = ["pc", ["op", ["xor"]], "ret"].flat(2).join(",");
+  results.tableFlatMap = table.flatMap(function(op) {
+    return [op, `${op}:${this.target}`];
+  }, tablePredicateContext).slice(0, 4).join(",");
+  results.tableEvery = table.every(function(op) { return op.length >= 3; }, tablePredicateContext);
+  results.tableSome = table.some(function(op) { return op === this.target; }, tablePredicateContext);
+  let forEachJoin = "";
+  table.forEach(function(op) { forEachJoin += `${this.target}:${op}|`; }, tablePredicateContext);
+  results.tableForEach = forEachJoin;
+  table.push("done");
+  results.tablePop = table.pop();
+  results.tableUnshift = table.unshift("init");
+  results.tableShift = table.shift();
+  results.tableSpliceDeleted = table.splice(2, 1, "mix", "rol").join(",");
+  results.tableSpliceLength = table.length;
+  table.reverse();
+  results.tableReverseHead = table[0];
+  table.sort();
+  results.tableSortHead = table[0];
+  table.copyWithin(1, 3, 5);
+  results.tableCopyWithinHead = table[1];
+  const fillTable = new Array(4).fill("empty");
+  fillTable.fill("state", 1, 3);
+  results.tableFillHead = fillTable[1];
+  results.tableSliceLength = table.slice(1, 4).length;
+  results.tableJoin = table.join("|");
+  results.stringLower = "X-Signature".toLowerCase();
+  results.stringUpper = "x-signature".toUpperCase();
+  const dispatchTable = {op: 1, load: 2, xor: 3, store: 4};
+  results.objectKeys = Object.keys(dispatchTable).length;
+  const assignedTable = Object.assign(
+    {seed: 0},
+    {op: dispatchTable.op},
+    null,
+    {xor: dispatchTable.xor}
+  );
+  results.objectAssign = `${assignedTable.op}:${assignedTable.xor}:${assignedTable.seed}`;
+  results.objectValues = Object.values(dispatchTable).join(",");
+  results.objectEntries = Object.entries(dispatchTable).map(([key, value]) => `${key}:${value}`).join(",");
+  results.objectNames = Object.getOwnPropertyNames(dispatchTable).length;
+  results.reflectKeys = Reflect.ownKeys(dispatchTable).length;
+  results.reflectHas = Reflect.has(dispatchTable, "xor");
+  results.reflectGet = Reflect.get(dispatchTable, "xor");
+  results.reflectDescriptor = !!Reflect.getOwnPropertyDescriptor(dispatchTable, "xor");
+  function dispatchHandler(state, opcode) {
+    state.dispatchSum = (state.dispatchSum || 0) + opcode;
+    return state.dispatchSum;
+  }
+  results.functionCall = dispatchHandler.call(null, results, 2);
+  results.functionApply = dispatchHandler.apply(null, [results, 3]);
+  results.reflectApply = Reflect.apply(dispatchHandler, null, [results, 4]);
+  const mapDispatch = new Map([["op", 1], ["xor", 3]]);
+  mapDispatch.set("store", 4);
+  results.mapGet = mapDispatch.get("xor");
+  results.mapHas = mapDispatch.has("store");
+  results.mapDelete = mapDispatch.delete("missing");
+  const setDispatch = new Set(["op", "xor"]);
+  setDispatch.add("store");
+  results.setHas = setDispatch.has("xor");
+  results.setDelete = setDispatch.delete("missing");
+  const proxyDispatch = new Proxy({opcode: 7, pc: 0}, {
+    get(target, prop, receiver) {
+      return Reflect.get(target, prop, receiver);
+    },
+    set(target, prop, value, receiver) {
+      return Reflect.set(target, prop, value, receiver);
+    },
+    has(target, prop) {
+      return Reflect.has(target, prop);
+    },
+    ownKeys(target) {
+      return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, prop) {
+      return Reflect.getOwnPropertyDescriptor(target, prop);
+    },
+    defineProperty(target, prop, descriptor) {
+      return Reflect.defineProperty(target, prop, descriptor);
+    },
+    deleteProperty(target, prop) {
+      return Reflect.deleteProperty(target, prop);
+    }
+  });
+  results.proxyGet = proxyDispatch.opcode;
+  proxyDispatch.pc = 12;
+  results.proxyHas = "opcode" in proxyDispatch;
+  results.proxyOwnKeys = Reflect.ownKeys(proxyDispatch).length;
+  results.proxyDescriptor = !!Reflect.getOwnPropertyDescriptor(proxyDispatch, "opcode");
+  Object.defineProperty(proxyDispatch, "scratch", {value: 1, configurable: true});
+  results.proxyDelete = delete proxyDispatch.scratch;
+  function bitwiseProbe(left, right, shiftInput) {
+    return {
+      and: left & right,
+      or: left | right,
+      xor: left ^ right,
+      not: ~right,
+      shiftLeft: right << 2,
+      shiftRight: shiftInput >> (right & 7),
+      shiftUnsigned: shiftInput >>> (right & 7)
+    };
+  }
+  const bitwise = bitwiseProbe(results.viewValue, encodedBytes[0], -results.charCode);
+  results.bitwiseAnd = bitwise.and;
+  results.bitwiseOr = bitwise.or;
+  results.bitwiseXor = bitwise.xor;
+  results.bitwiseNot = bitwise.not;
+  results.shiftLeft = bitwise.shiftLeft;
+  results.shiftRight = bitwise.shiftRight;
+  results.shiftUnsigned = bitwise.shiftUnsigned;
+  results.performanceNow = performance.now();
+  results.dateNow = Date.now();
+  console.debug("xtrace timing gate", results.performanceNow, results.dateNow);
+  console.clear();
+  debugger;
+  results.functionSourceLength = dispatchHandler.toString().length;
+  const stackTarget = {};
+  Error.captureStackTrace(stackTarget);
+  results.capturedStackLength = String(stackTarget.stack || "").length;
+  results.errorStackLength = String(new Error("xtrace-vmp-stack").stack || "").length;
+  try {
+    throw new Error("xtrace-vmp-exception");
+  } catch (err) {
+    results.thrownErrorName = err.name;
+    results.thrownErrorStackLength = String(err.stack || "").length;
+  }
+  try {
+    throw "xtrace-vmp-string";
+  } catch (err) {
+    results.thrownString = String(err);
+  }
+  const digest = await crypto.subtle.digest("SHA-256", encodedBytes);
+  results.digestBytes = digest.byteLength;
+  const hmacKeyMaterial = encoder.encode("xtrace-hmac-key");
+  const hmacKey = await crypto.subtle.importKey(
+    "raw",
+    hmacKeyMaterial,
+    {name: "HMAC", hash: "SHA-256"},
+    false,
+    ["sign"]
+  );
+  const hmacSignature = await crypto.subtle.sign("HMAC", hmacKey, encodedBytes);
+  results.hmacBytes = hmacSignature.byteLength;
+
+  const request = new Request(url.href, {
+    method: "POST",
+    body: "request-body",
+    headers: {"X-XTrace-Smoke": "request"}
+  });
+  results.requestUrl = request.url;
+  results.requestMethod = request.method;
+  results.requestHeader = request.headers.get("X-XTrace-Smoke");
+  const clonedRequest = request.clone();
+  results.clonedRequestHeader = clonedRequest.headers.get("X-XTrace-Smoke");
+  results.clonedRequestTextLength = (await clonedRequest.text()).length;
+  const typedBodyRequest = new Request("/api/feed/list?typed-body=1", {
+    method: "POST",
+    body: encodedBytes
+  });
+  results.typedBodyRequestUrl = typedBodyRequest.url;
+
+  const fetchResponse = await fetch("/fingerprint-smoke.html?fetch=1", {
+    headers: {"X-XTrace-Smoke": "fetch"}
+  });
+  results.fetchStatus = fetchResponse.status;
+  const fetchArrayBuffer = await fetchResponse.arrayBuffer();
+  results.fetchArrayBufferBytes = fetchArrayBuffer.byteLength;
+
+  await new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", "/fingerprint-smoke.html?xhr=1", true);
+    xhr.setRequestHeader("X-XTrace-Smoke", "xhr");
+    xhr.onloadend = () => {
+      results.xhrStatus = xhr.status;
+      results.xhrTextLength = xhr.responseText.length;
+      resolve();
+    };
+    xhr.send("xhr-body");
+  });
+  await new Promise((resolve) => {
+    const typedBodyXhr = new XMLHttpRequest();
+    typedBodyXhr.open("POST", "/api/feed/list?xhr-typed-body=1", true);
+    typedBodyXhr.setRequestHeader("X-XTrace-Smoke", "xhr-typed-body");
+    typedBodyXhr.onloadend = () => {
+      results.typedBodyXhrStatus = typedBodyXhr.status;
+      try {
+        results.typedBodyXhrBodySize = JSON.parse(typedBodyXhr.responseText).body_size;
+      } catch (error) {
+        results.typedBodyXhrError = String(error);
+      }
+      resolve();
+    };
+    typedBodyXhr.send(encodedBytes);
+  });
+
+  eval("window.__xtrace_eval = 1");
+  const generated = new Function("return 'function-smoke'");
+  results.generated = generated();
+  setTimeout("window.__xtrace_timer = 1", 0);
+
+  const script = document.createElement("script");
+  script.src = "/smoke-extra.js";
+  document.head.appendChild(script);
+
+  try {
+    const socket = new WebSocket("ws://127.0.0.1:8765/xtrace-smoke");
+    socket.addEventListener("open", () => {
+      socket.send("hello");
+      socket.close(1000, "done");
+    });
+    socket.addEventListener("error", () => {
+      results.websocket = "error";
+    });
+  } catch (error) {
+    results.websocket = String(error);
+  }
+
+  out.textContent = JSON.stringify(results, null, 2);
+})();
+</script>

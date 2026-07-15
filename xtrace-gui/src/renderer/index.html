@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'">
+  <title>XTrace Workbench</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section class="run-panel">
+      <div class="field wide">
+        <label for="chromiumPath">Chromium</label>
+        <div class="picker">
+          <input id="chromiumPath" spellcheck="false">
+          <button id="chooseChromium" type="button">Browse</button>
+        </div>
+      </div>
+      <div class="field wide">
+        <label for="url">URL</label>
+        <input id="url" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="logDir">Log directory</label>
+        <div class="picker">
+          <input id="logDir" spellcheck="false">
+          <button id="chooseLogDir" type="button">Browse</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="categories">Categories</label>
+        <input id="categories" spellcheck="false">
+      </div>
+      <div class="field small">
+        <label for="captureValues">Values</label>
+        <select id="captureValues">
+          <option value="full">full</option>
+          <option value="summary">summary</option>
+          <option value="args-only">args-only</option>
+        </select>
+      </div>
+      <div class="field small">
+        <label for="maxValueBytes">Max bytes</label>
+        <input id="maxValueBytes" type="number" min="1024" step="1024">
+      </div>
+      <div class="field small">
+        <label for="captureAssets">Assets</label>
+        <select id="captureAssets">
+          <option value="full">full</option>
+          <option value="summary">summary</option>
+          <option value="off">off</option>
+        </select>
+      </div>
+      <div class="field small">
+        <label for="assetMaxBytes">Asset bytes</label>
+        <input id="assetMaxBytes" type="number" min="1024" step="1024">
+      </div>
+      <div class="actions">
+        <button id="startRun" type="button" class="primary">Start</button>
+        <button id="stopRun" type="button">Stop</button>
+        <button id="refreshLogs" type="button">Refresh</button>
+        <button id="generateReport" type="button">Report</button>
+        <button id="applyRecipe" type="button">Apply recipe</button>
+        <button id="runRecipe" type="button">Run recipe</button>
+      </div>
+    </section>
+
+    <section class="status-band">
+      <div><span>Status</span><strong id="runState">Idle</strong></div>
+      <div><span>PID</span><strong id="pid">-</strong></div>
+      <div><span>Capture gate</span><strong id="captureGateState">-</strong></div>
+      <div><span>Profile</span><strong id="profilePath">-</strong></div>
+      <div><span>Trace</span><strong id="tracePath">-</strong></div>
+      <div><span>Agent pack</span><strong id="agentPackPath">-</strong></div>
+    </section>
+
+    <section class="workspace">
+      <aside class="logs-panel">
+        <h2>Logs</h2>
+        <div id="logList" class="log-list"></div>
+      </aside>
+      <section class="tail-panel">
+        <div class="tail-toolbar">
+          <h2>Tail</h2>
+          <input id="filter" placeholder="category or api" spellcheck="false">
+          <button id="clearEvents" type="button">Clear</button>
+        </div>
+        <div id="events" class="events"></div>
+      </section>
+      <section class="detail-panel">
+        <div class="detail-tabs">
+          <button id="showEvent" type="button" class="active">Event</button>
+          <button id="showAssets" type="button">Assets</button>
+          <button id="showReport" type="button">Report</button>
+        </div>
+        <div id="detail" class="detail-content json-detail">{}</div>
+      </section>
+    </section>
+  </main>
+  <script src="./reportView.js"></script>
+  <script src="./rerunRecipe.js"></script>
+  <script src="./captureGate.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
