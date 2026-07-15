@@ -53,13 +53,13 @@
   params.set("sessionToken", `query-${demoMarker}`);
   params.set("X-Signature", demoMarker);
 
-  const apiUrl = new URL("/api/recommend/item_list/", location.href);
+  const apiUrl = new URL("/api/records/list/", location.href);
   apiUrl.search = params.toString();
   results.apiUrl = apiUrl.href;
   results.itemListQueryKeys = Array.from(apiUrl.searchParams.keys()).sort();
 
   const itemHeaders = new Headers();
-  itemHeaders.set("X-XTrace-Smoke", "item-list-fetch");
+  itemHeaders.set("X-XTrace-Smoke", "records-fetch");
   itemHeaders.set("X-Session-Token", `header-${demoMarker}`);
   itemHeaders.set("X-Signature", demoMarker);
 
@@ -97,7 +97,7 @@
 
   await new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
-    const xhrUrl = new URL("/api/recommend/item_list/", location.href);
+    const xhrUrl = new URL("/api/records/list/", location.href);
     xhrUrl.searchParams.set("transport", "xhr");
     xhrUrl.searchParams.set("cursor", "2");
     xhrUrl.searchParams.set("X-Signature", demoMarker);

@@ -256,7 +256,7 @@ test("renderReportDetail and HTML show business API runtime hints", () => {
       event_count: 0,
       agent_evidence_pack: {
         business_api_runtime_hints: [{
-          endpoint: "https://www.example.test/api/recommend/item_list/",
+          endpoint: "https://www.example.test/api/records/list/",
           api: "decodeURIComponent",
           seq: 629407,
           business_relevance: "business_api_candidate",
@@ -279,9 +279,9 @@ test("renderReportDetail and HTML show business API runtime hints", () => {
   const html = renderReportHtml(report);
 
   assert.match(detail, /Business API Runtime Hints/);
-  assert.match(detail, /business_api_runtime_hint endpoint=https:\/\/www\.example\.test\/api\/recommend\/item_list\/ api=decodeURIComponent seq=629407 relevance=business_api_candidate status=truncated_preview query_keys=client_time,app_id,app_name,sessionToken roles=core_signature_asset,application_caller gaps=full_url_value_truncated,query_keys_incomplete next=capture_full_url_value,capture_network_anchor_for_endpoint/);
+  assert.match(detail, /business_api_runtime_hint endpoint=https:\/\/www\.example\.test\/api\/records\/list\/ api=decodeURIComponent seq=629407 relevance=business_api_candidate status=truncated_preview query_keys=client_time,app_id,app_name,sessionToken roles=core_signature_asset,application_caller gaps=full_url_value_truncated,query_keys_incomplete next=capture_full_url_value,capture_network_anchor_for_endpoint/);
   assert.match(html, /Business API Runtime Hints/);
-  assert.match(html, /business_api_runtime_hint endpoint=https:\/\/www\.example\.test\/api\/recommend\/item_list\//);
+  assert.match(html, /business_api_runtime_hint endpoint=https:\/\/www\.example\.test\/api\/records\/list\//);
   assert.match(html, /full_url_value_truncated,query_keys_incomplete/);
 });
 

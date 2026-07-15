@@ -11,8 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 BUSINESS_API_ROUTES = {
     "/api/feed/list",
-    "/api/recommend/item_list",
-    "/api/recommend/item_list/",
+    "/api/records/list",
+    "/api/records/list/",
 }
 
 class XTraceTestPageHandler(http.server.SimpleHTTPRequestHandler):

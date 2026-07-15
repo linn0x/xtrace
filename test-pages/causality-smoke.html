@@ -22,7 +22,7 @@
   }
 
   const payload = bytesAndJson('schema-v2');
-  const request = new Request('/api/recommend/item_list/?causality=smoke', {
+  const request = new Request('/api/records/list/?causality=smoke', {
     method: 'POST',
     headers: {'content-type': 'application/json'},
     body: JSON.stringify({first: payload.first, failure: caughtFailure()}),

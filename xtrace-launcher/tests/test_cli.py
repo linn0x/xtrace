@@ -165,7 +165,7 @@ class LauncherTests(unittest.TestCase):
             self.assertTrue(second_profile_path.name.startswith("profile_20260627_123456_"))
 
     def test_build_validate_command_defaults_to_business_api_strict_capture(self):
-        trace = Path("/tmp/online-item-list.ndjson")
+        trace = Path("/tmp/online-records.ndjson")
         command = build_validate_command(trace=trace)
 
         self.assertEqual(command[0], os.fspath(Path(sys.executable)))

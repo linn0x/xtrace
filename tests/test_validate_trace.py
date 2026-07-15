@@ -570,7 +570,7 @@ class ValidateTraceTests(unittest.TestCase):
 
     def vmp_next_core_events(self, *, start_seq: int = 1):
         current_href = (
-            "https://www.example.test/api/recommend/item_list/"
+            "https://www.example.test/api/records/list/"
             "?cursor=1&sessionToken=token-value"
         )
         current_search = "?cursor=1&sessionToken=token-value"
@@ -593,20 +593,20 @@ class ValidateTraceTests(unittest.TestCase):
             ("Location.href.get", self.location_read_args(current_href)),
             ("Location.search.get", self.location_read_args(current_search, href=current_href)),
             ("Location.href.set", self.location_write_args(
-                "/api/recommend/item_list/?cursor=2",
-                "https://www.example.test/api/recommend/item_list/?cursor=2",
+                "/api/records/list/?cursor=2",
+                "https://www.example.test/api/records/list/?cursor=2",
             )),
             ("Location.search.set", self.location_write_args(
                 "?cursor=2&X-Signature=secret-one",
-                "https://www.example.test/api/recommend/item_list/?cursor=2&X-Signature=secret-one",
+                "https://www.example.test/api/records/list/?cursor=2&X-Signature=secret-one",
             )),
             ("Location.assign", self.location_write_args(
-                "/api/recommend/item_list/?cursor=3",
-                "https://www.example.test/api/recommend/item_list/?cursor=3",
+                "/api/records/list/?cursor=3",
+                "https://www.example.test/api/records/list/?cursor=3",
             )),
             ("Location.replace", self.location_write_args(
-                "/api/recommend/item_list/?cursor=4",
-                "https://www.example.test/api/recommend/item_list/?cursor=4",
+                "/api/records/list/?cursor=4",
+                "https://www.example.test/api/records/list/?cursor=4",
             )),
             ("Storage.getItem", self.storage_get_item_args("sessionToken", "token-value")),
             ("Storage.setItem", self.storage_set_item_args("x-signature-seed", "seed-value")),
@@ -645,7 +645,7 @@ class ValidateTraceTests(unittest.TestCase):
             "is_eval": False,
             "is_constructor": False,
         }]
-        endpoint = "https://www.example.test/api/recommend/item_list/"
+        endpoint = "https://www.example.test/api/records/list/"
         get_url = (
             endpoint
             + "?client_time=1&app_id=1988&app_name=demo_web&browser_language=zh-CN"
@@ -656,11 +656,11 @@ class ValidateTraceTests(unittest.TestCase):
         post_url = endpoint + "?transport=xhr&cursor=2&X-Signature=demo"
         post_body = '{"cursor":"2","body_marker":"xtrace"}'
         fetch_body = (
-            '{"items":[{"id":"demo"}],"route":"/api/recommend/item_list/",'
+            '{"items":[{"id":"demo"}],"route":"/api/records/list/",'
             '"query":{"X-Signature":["demo"]}}'
         )
-        get_key = "sha1:get-item-list"
-        post_key = "sha1:post-item-list"
+        get_key = "sha1:get-records"
+        post_key = "sha1:post-records"
         events = []
 
         seq = 1
@@ -719,7 +719,7 @@ class ValidateTraceTests(unittest.TestCase):
             ("URL.href.get", [{"href": get_url}]),
             ("Headers.set", [{
                 "name": "X-XTrace-Smoke",
-                "value": "item-list-fetch",
+                "value": "records-fetch",
                 "value_ref": "string_ref:fetch-header-x-xtrace-smoke",
                 "normalized_value_ref": "string_ref:fetch-header-x-xtrace-smoke-normalized",
             }]),
@@ -731,7 +731,7 @@ class ValidateTraceTests(unittest.TestCase):
             }]),
             ("Headers.append", [{
                 "name": "x-xtrace-smoke",
-                "value": "item-list-fetch",
+                "value": "records-fetch",
                 "value_ref": "string_ref:fetch-header-x-xtrace-smoke-append",
                 "normalized_value_ref": "string_ref:fetch-header-x-xtrace-smoke-append-normalized",
             }]),
@@ -772,7 +772,7 @@ class ValidateTraceTests(unittest.TestCase):
             }]),
             ("Headers.get", [self.headers_get_args(
                 "X-XTrace-Smoke",
-                "item-list-fetch",
+                "records-fetch",
                 headers_id=29,
             )]),
             ("Headers.get", [self.headers_get_args(
@@ -935,7 +935,7 @@ class ValidateTraceTests(unittest.TestCase):
                 "network_correlation_key": get_key,
                 "headers": [
                     *browser_headers,
-                    self.network_header_args("X-XTrace-Smoke", "item-list-fetch"),
+                    self.network_header_args("X-XTrace-Smoke", "records-fetch"),
                     self.network_header_args("X-Session-Token", "header-demo"),
                     self.network_header_args("X-Signature", "demo"),
                 ],
@@ -2152,7 +2152,7 @@ class ValidateTraceTests(unittest.TestCase):
                     category="reverse",
                     seq=25,
                     event_id="session-1:25",
-                    args=[self.location_read_args("https://www.example.test/api/recommend/item_list/?cursor=1")],
+                    args=[self.location_read_args("https://www.example.test/api/records/list/?cursor=1")],
                 ),
                 schema_v1_event(
                     "Location.search.get",
@@ -2161,7 +2161,7 @@ class ValidateTraceTests(unittest.TestCase):
                     event_id="session-1:26",
                     args=[self.location_read_args(
                         "?cursor=1",
-                        href="https://www.example.test/api/recommend/item_list/?cursor=1",
+                        href="https://www.example.test/api/records/list/?cursor=1",
                     )],
                 ),
                 schema_v1_event(
@@ -2170,8 +2170,8 @@ class ValidateTraceTests(unittest.TestCase):
                     seq=27,
                     event_id="session-1:27",
                     args=[self.location_write_args(
-                        "/api/recommend/item_list/?cursor=2",
-                        "https://www.example.test/api/recommend/item_list/?cursor=2",
+                        "/api/records/list/?cursor=2",
+                        "https://www.example.test/api/records/list/?cursor=2",
                     )],
                 ),
                 schema_v1_event(
@@ -2181,7 +2181,7 @@ class ValidateTraceTests(unittest.TestCase):
                     event_id="session-1:28",
                     args=[self.location_write_args(
                         "?cursor=2&X-Signature=secret-one",
-                        "https://www.example.test/api/recommend/item_list/?cursor=2&X-Signature=secret-one",
+                        "https://www.example.test/api/records/list/?cursor=2&X-Signature=secret-one",
                     )],
                 ),
                 schema_v1_event(
@@ -2190,8 +2190,8 @@ class ValidateTraceTests(unittest.TestCase):
                     seq=29,
                     event_id="session-1:29",
                     args=[self.location_write_args(
-                        "/api/recommend/item_list/?cursor=3",
-                        "https://www.example.test/api/recommend/item_list/?cursor=3",
+                        "/api/records/list/?cursor=3",
+                        "https://www.example.test/api/records/list/?cursor=3",
                     )],
                 ),
                 schema_v1_event(
@@ -2200,8 +2200,8 @@ class ValidateTraceTests(unittest.TestCase):
                     seq=30,
                     event_id="session-1:30",
                     args=[self.location_write_args(
-                        "/api/recommend/item_list/?cursor=4",
-                        "https://www.example.test/api/recommend/item_list/?cursor=4",
+                        "/api/records/list/?cursor=4",
+                        "https://www.example.test/api/records/list/?cursor=4",
                     )],
                 ),
                 schema_v1_event(
@@ -2251,7 +2251,7 @@ class ValidateTraceTests(unittest.TestCase):
                     category="reverse",
                     seq=31,
                     event_id="session-1:31",
-                    args=[self.document_context_args("https://www.example.test/api/recommend/item_list/?cursor=1")],
+                    args=[self.document_context_args("https://www.example.test/api/records/list/?cursor=1")],
                 ),
                 schema_v1_event(
                     "Document.referrer.get",
@@ -4097,8 +4097,8 @@ class ValidateTraceTests(unittest.TestCase):
             for event in events:
                 if event["api"] == "Location.href.set":
                     event["args"] = [{
-                        "value": "/api/recommend/item_list/?cursor=2",
-                        "href": "https://www.example.test/api/recommend/item_list/?cursor=2",
+                        "value": "/api/records/list/?cursor=2",
+                        "href": "https://www.example.test/api/records/list/?cursor=2",
                     }]
                     break
             path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
@@ -4126,7 +4126,7 @@ class ValidateTraceTests(unittest.TestCase):
             events = self.vmp_next_core_events()
             for event in events:
                 if event["api"] == "Document.urlForBinding.get":
-                    event["args"] = [{"result": "https://www.example.test/api/recommend/item_list/?cursor=1"}]
+                    event["args"] = [{"result": "https://www.example.test/api/records/list/?cursor=1"}]
                     break
             path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
 
@@ -4906,7 +4906,7 @@ class ValidateTraceTests(unittest.TestCase):
     def test_validate_trace_requires_request_boundary_refs_for_vmp_next_hooks(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "trace.ndjson"
-            signed_url = "https://www.example.test/api/recommend/item_list/?cursor=1&X-Signature=secret-one"
+            signed_url = "https://www.example.test/api/records/list/?cursor=1&X-Signature=secret-one"
             events = [
                 *self.vmp_next_core_events(),
                 schema_v1_event(
@@ -5022,7 +5022,7 @@ class ValidateTraceTests(unittest.TestCase):
     def test_validate_trace_requires_request_header_material_for_vmp_next_hooks(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "trace.ndjson"
-            signed_url = "https://www.example.test/api/recommend/item_list/?cursor=1"
+            signed_url = "https://www.example.test/api/records/list/?cursor=1"
             events = [
                 *self.vmp_next_core_events(),
                 schema_v1_event(
@@ -5063,7 +5063,7 @@ class ValidateTraceTests(unittest.TestCase):
                         "method": "POST",
                         "url": signed_url,
                         "url_ref": "string_ref:xhr-url",
-                        "network_correlation_key": "sha1:item-list-post",
+                        "network_correlation_key": "sha1:records-post",
                         "name": "X-Signature",
                         "value": " secret-one ",
                         "value_ref": "string_ref:x-signature-raw",
@@ -5525,9 +5525,9 @@ class ValidateTraceTests(unittest.TestCase):
     def test_validate_trace_accepts_request_boundary_refs_for_vmp_next_hooks(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "trace.ndjson"
-            signed_url = "https://www.example.test/api/recommend/item_list/?cursor=1&X-Signature=secret-one"
-            key = "sha1:item-list-get"
-            post_key = "sha1:item-list-post"
+            signed_url = "https://www.example.test/api/records/list/?cursor=1&X-Signature=secret-one"
+            key = "sha1:records-get"
+            post_key = "sha1:records-post"
             events = [
                 *self.vmp_next_core_events(),
                 schema_v1_event(
@@ -5983,7 +5983,7 @@ class ValidateTraceTests(unittest.TestCase):
                     category="reverse",
                     seq=24,
                     event_id="session-1:24",
-                    args=[self.location_read_args("https://www.example.test/api/recommend/item_list/?cursor=1")],
+                    args=[self.location_read_args("https://www.example.test/api/records/list/?cursor=1")],
                 ),
                 schema_v1_event(
                     "Location.search.get",
@@ -5992,7 +5992,7 @@ class ValidateTraceTests(unittest.TestCase):
                     event_id="session-1:25",
                     args=[self.location_read_args(
                         "?cursor=1",
-                        href="https://www.example.test/api/recommend/item_list/?cursor=1",
+                        href="https://www.example.test/api/records/list/?cursor=1",
                     )],
                 ),
                 schema_v1_event(
@@ -6001,8 +6001,8 @@ class ValidateTraceTests(unittest.TestCase):
                     seq=26,
                     event_id="session-1:26",
                     args=[self.location_write_args(
-                        "/api/recommend/item_list/?cursor=2",
-                        "https://www.example.test/api/recommend/item_list/?cursor=2",
+                        "/api/records/list/?cursor=2",
+                        "https://www.example.test/api/records/list/?cursor=2",
                     )],
                 ),
                 schema_v1_event(
@@ -6012,7 +6012,7 @@ class ValidateTraceTests(unittest.TestCase):
                     event_id="session-1:27",
                     args=[self.location_write_args(
                         "?cursor=2&X-Signature=secret-one",
-                        "https://www.example.test/api/recommend/item_list/?cursor=2&X-Signature=secret-one",
+                        "https://www.example.test/api/records/list/?cursor=2&X-Signature=secret-one",
                     )],
                 ),
                 schema_v1_event(
@@ -6021,8 +6021,8 @@ class ValidateTraceTests(unittest.TestCase):
                     seq=28,
                     event_id="session-1:28",
                     args=[self.location_write_args(
-                        "/api/recommend/item_list/?cursor=3",
-                        "https://www.example.test/api/recommend/item_list/?cursor=3",
+                        "/api/records/list/?cursor=3",
+                        "https://www.example.test/api/records/list/?cursor=3",
                     )],
                 ),
                 schema_v1_event(
@@ -6031,8 +6031,8 @@ class ValidateTraceTests(unittest.TestCase):
                     seq=29,
                     event_id="session-1:29",
                     args=[self.location_write_args(
-                        "/api/recommend/item_list/?cursor=4",
-                        "https://www.example.test/api/recommend/item_list/?cursor=4",
+                        "/api/records/list/?cursor=4",
+                        "https://www.example.test/api/records/list/?cursor=4",
                     )],
                 ),
                 schema_v1_event(
@@ -6082,7 +6082,7 @@ class ValidateTraceTests(unittest.TestCase):
                     category="reverse",
                     seq=30,
                     event_id="session-1:30",
-                    args=[self.document_context_args("https://www.example.test/api/recommend/item_list/?cursor=1")],
+                    args=[self.document_context_args("https://www.example.test/api/records/list/?cursor=1")],
                 ),
                 schema_v1_event(
                     "Document.referrer.get",
@@ -7767,7 +7767,7 @@ class ValidateTraceTests(unittest.TestCase):
         self.assertEqual(VMP_API_FAMILY["Number.parseInt"], "number_parse")
         self.assertEqual(VMP_API_FAMILY["Number.parseFloat"], "number_parse")
 
-    def test_business_api_profile_accepts_item_list_field_and_header_sources(self):
+    def test_business_api_profile_accepts_records_field_and_header_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "trace.ndjson"
             path.write_text(
@@ -8002,7 +8002,7 @@ class ValidateTraceTests(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertIn("GET fetch call material evidence", output)
 
-    def test_business_api_profile_rejects_missing_item_list_header_source(self):
+    def test_business_api_profile_rejects_missing_records_header_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "trace.ndjson"
             path.write_text(
@@ -8093,7 +8093,7 @@ class ValidateTraceTests(unittest.TestCase):
 
             output = stdout.getvalue()
             self.assertEqual(result, 1)
-            self.assertIn("URL.search.set material refs for full GET item_list query", output)
+            self.assertIn("URL.search.set material refs for full GET records query", output)
 
     def test_business_api_profile_rejects_network_header_without_material_value(self):
         events = self.business_api_events()

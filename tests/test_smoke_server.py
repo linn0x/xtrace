@@ -162,13 +162,13 @@ class SmokeServerTests(unittest.TestCase):
         self.assertIn("fillTable.fill", content)
         self.assertIn("results.tableFillHead", content)
 
-    def test_business_api_smoke_page_targets_item_list_api(self):
+    def test_business_api_smoke_page_targets_records_api(self):
         page = ROOT / "test-pages" / "business-api-smoke.html"
 
         self.assertTrue(page.exists(), "business-api-smoke.html should exist")
 
         content = page.read_text(encoding="utf-8")
-        self.assertIn("/api/recommend/item_list/", content)
+        self.assertIn("/api/records/list/", content)
         self.assertIn("new Request", content)
         self.assertIn("fetch(request", content)
         self.assertIn("fetchResponse.json()", content)
@@ -206,13 +206,13 @@ class SmokeServerTests(unittest.TestCase):
                 port = server.server_address[1]
                 request = urllib.request.Request(
                     (
-                        f"http://127.0.0.1:{port}/api/recommend/item_list/"
+                        f"http://127.0.0.1:{port}/api/records/list/"
                         "?cursor=1&sessionToken=token-secret&X-Signature=demo-secret"
                     ),
                     headers={
                         "X-Signature": "header-secret",
                         "X-Session-Token": "header-token-secret",
-                        "X-XTrace-Smoke": "item-list-test",
+                        "X-XTrace-Smoke": "records-test",
                     },
                 )
                 with urllib.request.urlopen(request, timeout=5) as response:
@@ -228,7 +228,7 @@ class SmokeServerTests(unittest.TestCase):
             for header in payload["request_headers"]
         }
         self.assertIn("application/json", content_type)
-        self.assertEqual(payload["route"], "/api/recommend/item_list/")
+        self.assertEqual(payload["route"], "/api/records/list/")
         self.assertEqual(payload["query"]["cursor"], ["1"])
         self.assertEqual(payload["query"]["sessionToken"], ["token-secret"])
         self.assertEqual(payload["query"]["X-Signature"], ["demo-secret"])
@@ -236,7 +236,7 @@ class SmokeServerTests(unittest.TestCase):
         self.assertEqual(headers["x-session-token"]["value"], "header-token-secret")
         self.assertNotIn("redacted", headers["x-signature"])
         self.assertNotIn("redacted", headers["x-session-token"])
-        self.assertEqual(headers["x-xtrace-smoke"]["value"], "item-list-test")
+        self.assertEqual(headers["x-xtrace-smoke"]["value"], "records-test")
 
     def test_non_api_options_request_returns_404(self):
         handler = serve_test_page.make_test_page_handler(

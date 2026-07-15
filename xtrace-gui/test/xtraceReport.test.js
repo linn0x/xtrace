@@ -5737,7 +5737,7 @@ test("buildLocalReport surfaces business API runtime hints from truncated URL ca
     {function: "decodeUrl", url: sdkUrl, line: 1, column: 12629, asset_id: "sha1:security-runtime"},
     {function: "fetchData", url: appUrl, line: 2, column: 72756, asset_id: "sha1:feed"}
   ];
-  const truncatedBusinessUrl = "https://www.example.test/api/recommend/item_list/?client_time=1&app_id=1988&app_name=demo_web&sessionToken=secret-token";
+  const truncatedBusinessUrl = "https://www.example.test/api/records/list/?client_time=1&app_id=1988&app_name=demo_web&sessionToken=secret-token";
   const events = [
     {
       seq: 629407,
@@ -5788,7 +5788,7 @@ test("buildLocalReport surfaces business API runtime hints from truncated URL ca
   const hints = report.signature.agent_evidence_pack.business_api_runtime_hints;
   assert.equal(hints.length, 1);
   const [hint] = hints;
-  assert.equal(hint.endpoint, "https://www.example.test/api/recommend/item_list/");
+  assert.equal(hint.endpoint, "https://www.example.test/api/records/list/");
   assert.equal(hint.api, "decodeURIComponent");
   assert.equal(hint.seq, 629407);
   assert.equal(hint.business_relevance, "business_api_candidate");
@@ -5802,14 +5802,14 @@ test("buildLocalReport surfaces business API runtime hints from truncated URL ca
   assert.doesNotMatch(JSON.stringify(hint), /<redacted>|client_time=1|app_id=1988/);
   assert.match(
     renderMarkdownReport(report),
-    /business_api_runtime_hint endpoint=https:\/\/www\.example\.test\/api\/recommend\/item_list\/ api=decodeURIComponent seq=629407 relevance=business_api_candidate status=truncated_preview query_keys=sessionToken,client_time,app_id,app_name roles=core_signature_asset,application_caller gaps=full_url_value_truncated,query_keys_incomplete next=capture_full_url_value,capture_network_anchor_for_endpoint/
+    /business_api_runtime_hint endpoint=https:\/\/www\.example\.test\/api\/records\/list\/ api=decodeURIComponent seq=629407 relevance=business_api_candidate status=truncated_preview query_keys=sessionToken,client_time,app_id,app_name roles=core_signature_asset,application_caller gaps=full_url_value_truncated,query_keys_incomplete next=capture_full_url_value,capture_network_anchor_for_endpoint/
   );
 });
 
 test("buildLocalReport prefers full URI codec values over truncated URL previews", () => {
   const sdkUrl = "https://cdn.example.test/obj/generic_web_runtime/runtime-sdk/1.0.0.374/runtime-sdk.js";
   const stack = [{function: "decodeUrl", url: sdkUrl, line: 1, column: 12629, asset_id: "sha1:runtime-sdk"}];
-  const previewUrl = "https://www.example.test/api/recommend/item_list/?client_time=1&app_id=1988&app_name=demo_web";
+  const previewUrl = "https://www.example.test/api/records/list/?client_time=1&app_id=1988&app_name=demo_web";
   const fullUrl = [
     previewUrl,
     "app_language=en",
@@ -5853,7 +5853,7 @@ test("buildLocalReport prefers full URI codec values over truncated URL previews
   });
 
   const [hint] = report.signature.agent_evidence_pack.business_api_runtime_hints;
-  assert.equal(hint.endpoint, "https://www.example.test/api/recommend/item_list/");
+  assert.equal(hint.endpoint, "https://www.example.test/api/records/list/");
   assert.equal(hint.value_status, "full_value");
   assert.ok(hint.query_keys.includes("browser_platform"));
   assert.ok(hint.query_keys.includes("sessionToken"));
@@ -5864,7 +5864,7 @@ test("buildLocalReport prefers full URI codec values over truncated URL previews
 
 test("buildLocalReport preserves signature query keys from long full URL runtime hints", () => {
   const fillerQuery = Array.from({length: 80}, (_, index) => `k${index}=v${index}`).join("&");
-  const fullUrl = `https://www.example.test/api/recommend/item_list/?${fillerQuery}&sessionToken=secret-token&X-Signature=secret-signature`;
+  const fullUrl = `https://www.example.test/api/records/list/?${fillerQuery}&sessionToken=secret-token&X-Signature=secret-signature`;
   const report = buildLocalReport({
     tracePath: "/tmp/xtrace/logs/trace_example_long_full_uri_hint.ndjson",
     events: [{
@@ -16746,35 +16746,35 @@ test("buildAgentInputPack recognizes native string transform materialization eve
   );
 });
 
-test("buildAgentInputPack maps item_list request fields and header sources", () => {
-  const endpoint = "https://www.example.test/api/recommend/item_list/";
+test("buildAgentInputPack maps records request fields and header sources", () => {
+  const endpoint = "https://www.example.test/api/records/list/";
   const scriptUrl = "https://cdn.example.test/obj/generic_web_runtime/example/webapp/main/react-v18/webapp-desktop/feed-prefetch.c2241f3b.js";
   const stack = [{
     function: "fetchItemList",
     url: scriptUrl,
     line: 48,
     column: 16,
-    asset_id: "sha1:item-list-source",
-    asset_path: "assets/trace_item_list/feed-prefetch.js"
+    asset_id: "sha1:records-source",
+    asset_path: "assets/trace_records/feed-prefetch.js"
   }];
   const signedUrl = `${endpoint}?client_time=1&app_id=1988&app_name=demo_web&browser_language=zh-CN&count=30&device_platform=web_pc&sessionToken=secret-token&X-Signature=secret-one`;
   const events = [
     {seq: 1, category: "reverse", phase: "get", api: "Document.cookie.get", args: [{cookie_names: ["sessionToken", "visitor_id"], value: "sessionToken=secret-token; visitor_id=seed-cookie"}], origin: "https://www.example.test", stack},
     {seq: 2, category: "reverse", phase: "call", api: "localStorage.getItem", args: [{key: "web_id", value_length: 19, result_ref: "storage:local:web_id"}], origin: "https://www.example.test", stack},
-    {seq: 3, category: "reverse", phase: "call", api: "TextEncoder.encode", args: [{input_ref: "string_ref:item-list-canonical", result_array_buffer_id: 701}], origin: "https://www.example.test", stack},
+    {seq: 3, category: "reverse", phase: "call", api: "TextEncoder.encode", args: [{input_ref: "string_ref:records-canonical", result_array_buffer_id: 701}], origin: "https://www.example.test", stack},
     {seq: 4, category: "reverse", phase: "call", api: "DataView.getUint32", args: [{array_buffer_id: 701, data_view_id: 702, byte_offset: 0, little_endian: true, result: 123}], origin: "https://www.example.test", stack},
-    {seq: 5, category: "reverse", phase: "call", api: "Math.imul", args: [{x: 123, y: 16777619, result_ref: "number:item-list-mix"}], origin: "https://www.example.test", stack},
+    {seq: 5, category: "reverse", phase: "call", api: "Math.imul", args: [{x: 123, y: 16777619, result_ref: "number:records-mix"}], origin: "https://www.example.test", stack},
     {seq: 6, category: "reverse", phase: "call", api: "URL.constructor", args: [{url_object_id: 91, search_params_id: 92, url: `${endpoint}?client_time=1&app_id=1988&app_name=demo_web&browser_language=zh-CN&count=30&device_platform=web_pc&sessionToken=secret-token`}], origin: "https://www.example.test", stack},
-    {seq: 7, category: "reverse", phase: "call", api: "URLSearchParams.set", args: [{url_object_id: 91, search_params_id: 92, name: "X-Signature", value: "secret-one", value_ref: "string_ref:item-list-query-xsignature"}], origin: "https://www.example.test", stack},
+    {seq: 7, category: "reverse", phase: "call", api: "URLSearchParams.set", args: [{url_object_id: 91, search_params_id: 92, name: "X-Signature", value: "secret-one", value_ref: "string_ref:records-query-xsignature"}], origin: "https://www.example.test", stack},
     {seq: 8, category: "reverse", phase: "call", api: "Headers.constructor", args: [{headers_id: 501}], origin: "https://www.example.test", stack},
-    {seq: 9, category: "reverse", phase: "call", api: "Headers.set", args: [{headers_id: 501, name: "X-Session-Token", value: "secret-token", value_ref: "string_ref:item-list-header-sessiontoken", redacted: true}], origin: "https://www.example.test", stack},
-    {seq: 10, category: "reverse", phase: "call", api: "Headers.set", args: [{headers_id: 501, name: "X-Signature", value: "secret-one", value_ref: "string_ref:item-list-header-xsignature"}], origin: "https://www.example.test", stack},
-    {seq: 11, category: "reverse", phase: "call", api: "Request.constructor", args: [{method: "GET", url_object_id: 91, search_params_id: 92, url: signedUrl, headers_id: 501, network_correlation_key: "sha1:item-list-request"}], origin: "https://www.example.test", stack},
-    {seq: 12, category: "reverse", phase: "call", api: "fetch", args: [{method: "GET", url: signedUrl, url_ref: "string_ref:item-list-signed-url", headers_id: 501, network_correlation_key: "sha1:item-list-request"}], origin: "https://www.example.test", stack},
+    {seq: 9, category: "reverse", phase: "call", api: "Headers.set", args: [{headers_id: 501, name: "X-Session-Token", value: "secret-token", value_ref: "string_ref:records-header-sessiontoken", redacted: true}], origin: "https://www.example.test", stack},
+    {seq: 10, category: "reverse", phase: "call", api: "Headers.set", args: [{headers_id: 501, name: "X-Signature", value: "secret-one", value_ref: "string_ref:records-header-xsignature"}], origin: "https://www.example.test", stack},
+    {seq: 11, category: "reverse", phase: "call", api: "Request.constructor", args: [{method: "GET", url_object_id: 91, search_params_id: 92, url: signedUrl, headers_id: 501, network_correlation_key: "sha1:records-request"}], origin: "https://www.example.test", stack},
+    {seq: 12, category: "reverse", phase: "call", api: "fetch", args: [{method: "GET", url: signedUrl, url_ref: "string_ref:records-signed-url", headers_id: 501, network_correlation_key: "sha1:records-request"}], origin: "https://www.example.test", stack},
     {seq: 13, category: "network", phase: "call", api: "BrowserNetwork.request", args: [{
       method: "GET",
       url: signedUrl,
-      network_correlation_key: "sha1:item-list-request",
+      network_correlation_key: "sha1:records-request",
       request_initiator: "https://www.example.test",
       referrer: "https://www.example.test/feed",
       is_fetch_like_api: true,
@@ -16792,7 +16792,7 @@ test("buildAgentInputPack maps item_list request fields and header sources", () 
     {seq: 14, category: "network", phase: "return", api: "BrowserNetwork.response", args: [{
       method: "GET",
       url: signedUrl,
-      network_correlation_key: "sha1:item-list-request",
+      network_correlation_key: "sha1:records-request",
       response_code: 200,
       mime_type: "application/json",
       response_headers: [
@@ -16803,13 +16803,13 @@ test("buildAgentInputPack maps item_list request fields and header sources", () 
   ];
 
   const report = buildLocalReport({
-    tracePath: "/tmp/xtrace/logs/trace_item_list_request_fields.ndjson",
+    tracePath: "/tmp/xtrace/logs/trace_records_request_fields.ndjson",
     events,
     assets: [{
-      asset_id: "sha1:item-list-source",
+      asset_id: "sha1:records-source",
       kind: "external-script",
       url: scriptUrl,
-      content_path: "assets/trace_item_list/feed-prefetch.js",
+      content_path: "assets/trace_records/feed-prefetch.js",
       content: [
         "function fetchItemList(baseUrl) {",
         "  const seed = document.cookie + localStorage.getItem('web_id');",
@@ -16835,14 +16835,14 @@ test("buildAgentInputPack maps item_list request fields and header sources", () 
   assert.ok(materialFlow);
   assert.equal(bundle.endpoint, endpoint);
   assert.equal(bundle.network_anchor.api, "BrowserNetwork.request");
-  assert.equal(bundle.network_anchor.network_correlation_key, "sha1:item-list-request");
+  assert.equal(bundle.network_anchor.network_correlation_key, "sha1:records-request");
   for (const key of ["client_time", "app_id", "app_name", "browser_language", "count", "device_platform", "sessionToken", "X-Signature"]) {
     assert.ok(bundle.url.query_keys.includes(key), `missing query key ${key}`);
   }
   assert.ok(materialFlow.signature_attachment_events.some((event) =>
     event.api === "URLSearchParams.set" &&
     event.target_params.includes("X-Signature") &&
-    event.value_refs.includes("string_ref:item-list-query-xsignature")
+    event.value_refs.includes("string_ref:records-query-xsignature")
   ));
   assert.match(bundle.url.url, /sessionToken=secret-token/);
   assert.match(bundle.url.url, /X-Signature=secret-one/);
@@ -16853,12 +16853,12 @@ test("buildAgentInputPack maps item_list request fields and header sources", () 
   assert.ok(bundle.headers.events.some((event) =>
     event.api === "Headers.set" &&
     event.header_name === "x-signature" &&
-    event.value_refs.includes("string_ref:item-list-header-xsignature")
+    event.value_refs.includes("string_ref:records-header-xsignature")
   ));
   assert.ok(bundle.headers.events.some((event) =>
     event.api === "Headers.set" &&
     event.header_name === "x-session-token" &&
-    event.value_refs.includes("string_ref:item-list-header-sessiontoken")
+    event.value_refs.includes("string_ref:records-header-sessiontoken")
   ));
   assert.ok(bundle.headers.events.some((event) =>
     event.api === "BrowserNetwork.request" &&

@@ -70,7 +70,7 @@ class AnalyzeVmpTraceTests(unittest.TestCase):
 
     def test_summarize_detects_renderer_materialization_before_network(self):
         signed_url = (
-            "https://www.example.test/api/post/item_list/?cursor=0"
+            "https://www.example.test/api/records/list/?cursor=0"
             "&sessionToken=token-value&X-Signature=signature-value"
         )
         stack = [{"url": "https://www.example.test/app", "line": 10, "column": 2}]
@@ -113,7 +113,7 @@ class AnalyzeVmpTraceTests(unittest.TestCase):
         self.assertEqual(summary["signed_url_count"], 2)
         self.assertEqual(summary["network_signed_url_count"], 1)
         self.assertEqual(summary["first_assembly_event"]["api"], "URLSearchParams.set")
-        self.assertEqual(summary["first_network_signed_url"]["path"], "/api/post/item_list/")
+        self.assertEqual(summary["first_network_signed_url"]["path"], "/api/records/list/")
         self.assertEqual(
             summary["first_network_signed_url"]["primary_target_value_length"],
             len("signature-value"),
@@ -246,7 +246,7 @@ class AnalyzeVmpTraceTests(unittest.TestCase):
 
     def test_summarize_builds_pre_materialization_timeline_by_mono_time(self):
         signed_url = (
-            "https://www.example.test/api/post/item_list/?cursor=0"
+            "https://www.example.test/api/records/list/?cursor=0"
             "&sessionToken=token-value&X-Signature=signature-value"
         )
         stack = [{"url": "https://cdn.example.test/loader.js", "function": "qn", "line": 4}]

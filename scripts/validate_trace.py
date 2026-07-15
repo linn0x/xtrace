@@ -421,7 +421,7 @@ PROFILE_EXPECTED_APIS = {
     "reverse": REVERSE_EXPECTED_APIS,
     "all": [*FINGERPRINT_EXPECTED_APIS, *REVERSE_EXPECTED_APIS],
 }
-BUSINESS_API_ENDPOINT_PATH = "/api/recommend/item_list/"
+BUSINESS_API_ENDPOINT_PATH = "/api/records/list/"
 BUSINESS_API_REQUIRED_GET_QUERY_KEYS = {
     "client_time",
     "app_id",
@@ -2832,7 +2832,7 @@ def response_header_iteration_has_material_evidence(
     )
 
 
-def validate_business_api_item_list(events: list[dict]) -> None:
+def validate_business_api_records(events: list[dict]) -> None:
     missing: list[str] = []
 
     network_events = [
@@ -2844,9 +2844,9 @@ def validate_business_api_item_list(events: list[dict]) -> None:
     get_network = next((event for event in network_events if first_arg(event).get("method") == "GET"), None)
     post_network = next((event for event in network_events if first_arg(event).get("method") == "POST"), None)
     if get_network is None:
-        missing.append("BrowserNetwork.request GET /api/recommend/item_list/")
+        missing.append("BrowserNetwork.request GET /api/records/list/")
     if post_network is None:
-        missing.append("BrowserNetwork.request POST /api/recommend/item_list/")
+        missing.append("BrowserNetwork.request POST /api/records/list/")
 
     if get_network is not None:
         get_arg = first_arg(get_network)
@@ -3068,7 +3068,7 @@ def validate_business_api_item_list(events: list[dict]) -> None:
         and BUSINESS_API_REQUIRED_GET_QUERY_KEYS <= query_keys_from_url(str(first_arg(event).get("href", "")))
         for event in events
     ):
-        missing.append("URL.search.set source for full GET item_list query")
+        missing.append("URL.search.set source for full GET records query")
 
     if not any(
         event.get("api") == "URL.search.set"
@@ -3078,7 +3078,7 @@ def validate_business_api_item_list(events: list[dict]) -> None:
         and full_url_source_has_material_refs(first_arg(event))
         for event in events
     ):
-        missing.append("URL.search.set material refs for full GET item_list query")
+        missing.append("URL.search.set material refs for full GET records query")
 
     fetch_header_sources = {
         str(first_arg(event).get("name", "")).lower()
@@ -3189,7 +3189,7 @@ def validate_business_api_item_list(events: list[dict]) -> None:
 
     if missing:
         raise TraceValidationError(
-            "Missing business API item_list evidence: " + "; ".join(missing)
+            "Missing business API records evidence: " + "; ".join(missing)
         )
 
 
@@ -3269,7 +3269,7 @@ def validate_trace(
     require_vmp_families: Iterable[str] = (),
     require_arg_fields: Iterable[str] = (),
     require_vmp_next_hook_fields: bool = False,
-    require_business_api_item_list: bool = False,
+    require_business_api_records: bool = False,
     require_signature_param_materialization: Iterable[str] = (),
     require_complete_values: bool = False,
     require_vmp_family_evidence: bool = False,
@@ -3382,8 +3382,8 @@ def validate_trace(
             parts.append("Expected observed API arg fields not found: " + ", ".join(missing_observed_arg_fields))
         raise TraceValidationError("; ".join(parts))
 
-    if require_business_api_item_list:
-        validate_business_api_item_list(events)
+    if require_business_api_records:
+        validate_business_api_records(events)
 
     required_signature_params = list(require_signature_param_materialization)
     if required_signature_params:
@@ -3483,7 +3483,7 @@ def main(argv: list[str] | None = None) -> int:
             require_vmp_families=require_vmp_families,
             require_arg_fields=args.require_arg_field,
             require_vmp_next_hook_fields=require_vmp_next_hook_fields,
-            require_business_api_item_list=profile == "business-api",
+            require_business_api_records=profile == "business-api",
             require_signature_param_materialization=require_signature_param_materialization,
             require_complete_values=args.require_complete_values or args.strict_capture,
             require_vmp_family_evidence=args.require_vmp_family_evidence or args.strict_capture,
