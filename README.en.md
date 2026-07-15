@@ -7,6 +7,7 @@
 *Patch Chromium once. Load any page. Watch the obfuscated runtime — API calls, stacks, values, crypto material, and JSVMP hook families — stream out as clean, structured NDJSON.*
 
 [![release](https://img.shields.io/badge/release-v1.0.0-brightgreen)](https://github.com/linn0x/xtrace/releases)
+[![tests](https://github.com/linn0x/xtrace/actions/workflows/ci.yml/badge.svg)](https://github.com/linn0x/xtrace/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-macOS-lightgrey)]()
 [![engine](https://img.shields.io/badge/engine-Chromium%20%2B%20V8-orange)]()
@@ -230,6 +231,7 @@ If the ninja graph is unhealthy but object files are intact, `scripts/solink_xtr
 | [`docs/superpowers/specs/2026-06-27-chromium-xtrace-design.md`](docs/superpowers/specs/2026-06-27-chromium-xtrace-design.md) | Design |
 | [`docs/superpowers/plans/2026-06-27-chromium-xtrace-proof-of-life.md`](docs/superpowers/plans/2026-06-27-chromium-xtrace-proof-of-life.md) | Implementation plan |
 | [`docs/chromium-build.md`](docs/chromium-build.md) | Build notes, pinned revision, GN args, troubleshooting |
+| [`docs/reproduce.md`](docs/reproduce.md) | Reproduction guide (no-build verification + real capture→validate) |
 | [`docs/trace-schema-v1.md`](docs/trace-schema-v1.md) | Trace schema |
 | [`docs/trace-schema-v2.md`](docs/trace-schema-v2.md) | Causal schema v2 (`--xtrace-causality=sync` opt-in) |
 | [`docs/sign-analysis-recipe.md`](docs/sign-analysis-recipe.md) | Signing-analysis recipe |

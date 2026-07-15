@@ -7,6 +7,7 @@
 *给 Chromium 打一次补丁,加载任意页面,即可把混淆代码的运行时——API 调用、调用栈、值、加密材料、JSVMP hook 家族——以干净、结构化的 NDJSON 流式导出。*
 
 [![release](https://img.shields.io/badge/release-v1.0.0-brightgreen)](https://github.com/linn0x/xtrace/releases)
+[![tests](https://github.com/linn0x/xtrace/actions/workflows/ci.yml/badge.svg)](https://github.com/linn0x/xtrace/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-macOS-lightgrey)]()
 [![engine](https://img.shields.io/badge/engine-Chromium%20%2B%20V8-orange)]()
@@ -230,6 +231,7 @@ tests/             # 脚本 / 分析器的单元测试
 | [`docs/superpowers/specs/2026-06-27-chromium-xtrace-design.md`](docs/superpowers/specs/2026-06-27-chromium-xtrace-design.md) | 设计方案 |
 | [`docs/superpowers/plans/2026-06-27-chromium-xtrace-proof-of-life.md`](docs/superpowers/plans/2026-06-27-chromium-xtrace-proof-of-life.md) | 实施计划 |
 | [`docs/chromium-build.md`](docs/chromium-build.md) | 构建说明、固定 revision、GN 参数、排错 |
+| [`docs/reproduce.md`](docs/reproduce.md) | 复现指南(免构建校验 + 真实抓取→校验) |
 | [`docs/trace-schema-v1.md`](docs/trace-schema-v1.md) | Trace schema |
 | [`docs/trace-schema-v2.md`](docs/trace-schema-v2.md) | 因果 schema v2(`--xtrace-causality=sync` opt-in) |
 | [`docs/sign-analysis-recipe.md`](docs/sign-analysis-recipe.md) | 签名分析 recipe |

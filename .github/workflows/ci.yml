@@ -1,0 +1,29 @@
+name: tests
+
+# Proves the no-build path reproduces on a fresh clone: the launcher, validator,
+# analyzer, sign_pipeline, and GUI logic all run without building Chromium (they
+# exercise synthetic fixtures). scripts/run_tests.sh is the repo's own test
+# entrypoint (Python unittest x2 + the GUI node --test suite). Building the
+# patched browser is a separate, machine-heavy step -- see docs/reproduce.md.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install GUI deps (skip the Electron binary; unit tests are plain node)
+        working-directory: xtrace-gui
+        run: npm ci --ignore-scripts
+      - name: Run all suites via the repo entrypoint
+        run: scripts/run_tests.sh
