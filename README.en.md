@@ -35,6 +35,7 @@ It is deliberately **site-neutral and general**: the same tooling works on any o
 - 🎯 **Nine JSVMP-oriented hook families** — every capture can be validated to prove real evidence (values, refs, results) exists for each family, not just names.
 - 🔐 **Crypto material in the clear** — captures digest/AES/HMAC inputs *and outputs*, including CryptoJS-style `charCodeAt` hashing and the WASM boundary, clock-aligned into one trace.
 - 📏 **Structured & verifiable** — stable **schema v1 NDJSON** with a strict validator: reject truncated values, opaque refs, or evidence-free family hits.
+- 🧬 **Optional causal schema v2** — `--xtrace-causality=sync` adds renderer-thread synchronous causal identity (`call_id` / `parent_id` / `depth`): a script `evaluate` becomes a paired call/return and other records become its children. Preserves every schema v1 field; off by default.
 - 🕵️ **Data-flow reports, not magic** — the signing-analysis pipeline reduces a request-signing flow to **inputs → operators → output** as an auditable report.
 - 🖥️ **Browser owns the trace** — renderer sandboxing stays *on*; events cross `blink.mojom.XTraceHost` (Mojo IPC) and the browser process writes the file.
 - 🧪 **Batteries-included harness** — self-contained smoke pages for obfuscation / reverse / VMP surfaces, plus a Python CLI and an Electron workbench.
@@ -79,7 +80,7 @@ See [`docs/runtime-trace-plan.md`](docs/runtime-trace-plan.md) and [`docs/trace-
 # 1. Fetch depot_tools + Chromium (pinned revision the patches target)
 scripts/bootstrap_chromium.sh
 
-# 2. Apply patches (0001 → chromium/src, 0002 → chromium/src/v8)
+# 2. Apply patches (0001/0003/0004 → chromium/src, 0002 → chromium/src/v8)
 scripts/apply_patches.sh
 
 # 3. Build the patched browser
@@ -109,7 +110,9 @@ PYTHONPATH=. python3 -m xtrace_launcher run \
   --validate-after-exit
 ```
 
-More self-contained pages under [`test-pages/`](test-pages/): `obfuscation-smoke.html`, `fingerprint-smoke.html`, `json-parse-smoke.html`, and worker/fetch variants.
+> Add `--xtrace-causality=sync` to emit a **schema v2 causal trace** (validate with `--schema-version 2`); the default stays schema v1.
+
+More self-contained pages under [`test-pages/`](test-pages/): `obfuscation-smoke.html`, `fingerprint-smoke.html`, `json-parse-smoke.html`, `causality-smoke.html`, and worker/fetch variants.
 
 ---
 
@@ -203,7 +206,7 @@ Traces default to **full fidelity** so obfuscation and JSVMP reconstruction stay
 ## Repository layout
 
 ```
-patches/           # 0001 native logger, 0002 V8 JSVMP hooks
+patches/           # 0001 native logger, 0002 V8 JSVMP hooks, 0003/0004 causal schema v2
 scripts/           # bootstrap, build, serve, validate, analyze, sign_pipeline
 xtrace-launcher/   # Python CLI: run patched Chromium, capture NDJSON
 xtrace-gui/        # Electron capture + review workbench
@@ -228,6 +231,7 @@ If the ninja graph is unhealthy but object files are intact, `scripts/solink_xtr
 | [`docs/superpowers/plans/2026-06-27-chromium-xtrace-proof-of-life.md`](docs/superpowers/plans/2026-06-27-chromium-xtrace-proof-of-life.md) | Implementation plan |
 | [`docs/chromium-build.md`](docs/chromium-build.md) | Build notes, pinned revision, GN args, troubleshooting |
 | [`docs/trace-schema-v1.md`](docs/trace-schema-v1.md) | Trace schema |
+| [`docs/trace-schema-v2.md`](docs/trace-schema-v2.md) | Causal schema v2 (`--xtrace-causality=sync` opt-in) |
 | [`docs/sign-analysis-recipe.md`](docs/sign-analysis-recipe.md) | Signing-analysis recipe |
 | [`docs/trace-log-improvements.md`](docs/trace-log-improvements.md) | Trace-log improvements |
 | [`docs/runtime-trace-plan.md`](docs/runtime-trace-plan.md) | Runtime-trace roadmap |
@@ -236,6 +240,8 @@ If the ninja graph is unhealthy but object files are intact, `scripts/solink_xtr
 
 - `patches/0001-xtrace-native-logger.patch` → `chromium/src` (Blink / browser network logging)
 - `patches/0002-xtrace-v8-vmp-hooks.patch` → `chromium/src/v8` (JSVMP-oriented runtime hooks)
+- `patches/0003-xtrace-schema-v2-renderer.patch` → `chromium/src` (renderer sync causal identity, opt-in)
+- `patches/0004-xtrace-schema-v2-browser.patch` → `chromium/src` (marks network-boundary records external)
 
 ---
 
