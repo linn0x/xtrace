@@ -72,7 +72,7 @@ class BuildScriptTests(unittest.TestCase):
         self.assertNotIn('[[ ! -d src/.git ]]', script)
         self.assertIn("Existing path is not a Chromium Git checkout", script)
 
-    def test_apply_patches_preflights_all_trees_before_applying(self):
+    def test_apply_patches_orders_schema_v2_patches_after_native_base(self):
         script = (ROOT / "scripts" / "apply_patches.sh").read_text(
             encoding="utf-8"
         )
@@ -83,8 +83,14 @@ class BuildScriptTests(unittest.TestCase):
         self.assertIn("is not a standalone Git checkout", script)
         self.assertIn("NATIVE_MODE=\"$(preflight_one \"$SRC\" \"$PATCH_NATIVE\")\"", script)
         self.assertIn("V8_MODE=\"$(preflight_one \"$SRC/v8\" \"$PATCH_V8\")\"", script)
+        self.assertIn("PATCH_CAUSALITY_RENDERER", script)
+        self.assertIn("PATCH_CAUSALITY_BROWSER", script)
         self.assertLess(script.index("NATIVE_MODE="), script.index("apply_one \"$SRC\""))
         self.assertLess(script.index("V8_MODE="), script.index("apply_one \"$SRC\""))
+        self.assertLess(script.index("apply_one \"$SRC\" \"$PATCH_NATIVE\""),
+                        script.index("CAUSALITY_RENDERER_MODE="))
+        self.assertLess(script.index("CAUSALITY_RENDERER_MODE="),
+                        script.index("CAUSALITY_BROWSER_MODE="))
         self.assertIn("apply --3way --check", script)
 
     def test_relink_runtime_script_targets_minimal_native_hook_chain(self):
@@ -2842,6 +2848,36 @@ class BuildScriptTests(unittest.TestCase):
         self.assertIn("module_type", dynamic_module_resolver)
         self.assertIn("import_phase", dynamic_module_resolver)
         self.assertIn("promise_resolver_id", dynamic_module_resolver)
+
+    def test_schema_v2_causality_switch_raii_and_v8_bridge_are_wired(self):
+        logger = (
+            ROOT / "chromium" / "src" / "third_party" / "blink" / "renderer"
+            / "platform" / "xtrace" / "xtrace_logger.cc"
+        ).read_text(encoding="utf-8")
+        header = (
+            ROOT / "chromium" / "src" / "third_party" / "blink" / "renderer"
+            / "platform" / "xtrace" / "xtrace_logger.h"
+        ).read_text(encoding="utf-8")
+        runner = (
+            ROOT / "chromium" / "src" / "third_party" / "blink" / "renderer"
+            / "bindings" / "core" / "v8" / "v8_script_runner.cc"
+        ).read_text(encoding="utf-8")
+        initializer = (
+            ROOT / "chromium" / "src" / "third_party" / "blink" / "renderer"
+            / "bindings" / "core" / "v8" / "v8_initializer.cc"
+        ).read_text(encoding="utf-8")
+        browser = (ROOT / "chromium" / "src" / "chrome" / "browser"
+                   / "chrome_content_browser_client.cc").read_text(encoding="utf-8")
+
+        self.assertIn('"xtrace-causality"', logger)
+        self.assertIn('"schema_version\\":2"', logger)
+        self.assertIn("thread_local std::vector<XTraceActivation>", logger)
+        self.assertIn("AppendCausalityFields", logger)
+        self.assertIn("XTraceActivationScope", header)
+        self.assertIn("XTraceActivationScope xtrace_activation", runner)
+        self.assertIn("xtrace:vmp-runtime:", initializer)
+        self.assertIn("LogEventNoStack(\"reverse\"", initializer)
+        self.assertIn("AddXTraceExternalCausality", browser)
 
     def test_xtrace_classic_script_evaluate_links_asset_metadata(self):
         v8_script_runner = (

@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>XTrace schema v2 causality smoke</title>
+<pre id="result">running</pre>
+<script>
+(() => {
+  const output = document.querySelector('#result');
+  function bytesAndJson(seed) {
+    const encoded = new TextEncoder().encode(JSON.stringify({seed, nested: [1, 2, 3]}));
+    const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+    view.setUint8(0, view.getUint8(0) ^ 0x5a);
+    return {encoded, first: view.getUint8(0)};
+  }
+
+  function caughtFailure() {
+    try {
+      JSON.parse('{not-json}');
+    } catch (error) {
+      return error.name;
+    }
+    return 'missed';
+  }
+
+  const payload = bytesAndJson('schema-v2');
+  const request = new Request('/api/recommend/item_list/?causality=smoke', {
+    method: 'POST',
+    headers: {'content-type': 'application/json'},
+    body: JSON.stringify({first: payload.first, failure: caughtFailure()}),
+  });
+  fetch(request).catch(() => undefined);
+  output.textContent = JSON.stringify({first: payload.first, failure: caughtFailure()});
+  // Give the optional CDP pre-document hook a deterministic post-navigation
+  // boundary without assigning an asynchronous parent in schema v2.
+  setTimeout(() => JSON.stringify({injected_boundary: true}), 750);
+})();
+</script>

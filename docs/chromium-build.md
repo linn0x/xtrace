@@ -36,6 +36,8 @@ scripts/bootstrap_chromium.sh
 # 2. Apply the XTrace patches
 #    0001-xtrace-native-logger.patch -> chromium/src      (Blink / chrome / content)
 #    0002-xtrace-v8-vmp-hooks.patch  -> chromium/src/v8   (V8 builtins / runtime)
+#    0003-xtrace-schema-v2-renderer.patch -> chromium/src (renderer causality)
+#    0004-xtrace-schema-v2-browser.patch  -> chromium/src (browser external boundaries)
 scripts/apply_patches.sh
 
 # 3. Generate build files

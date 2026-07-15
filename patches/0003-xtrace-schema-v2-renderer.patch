@@ -1,0 +1,412 @@
+diff --git a/third_party/blink/renderer/bindings/core/v8/v8_script_runner.cc b/third_party/blink/renderer/bindings/core/v8/v8_script_runner.cc
+index 8da7876994e36..05e5e99341133 100644
+--- a/third_party/blink/renderer/bindings/core/v8/v8_script_runner.cc
++++ b/third_party/blink/renderer/bindings/core/v8/v8_script_runner.cc
+@@ -93,6 +93,19 @@ const char* XTraceScriptEvaluationResultType(
+   return "unknown";
+ }
+ 
++const char* XTraceScriptEvaluationTerminalPhase(
++    ScriptEvaluationResult::ResultType result_type) {
++  switch (result_type) {
++    case ScriptEvaluationResult::ResultType::kException:
++    case ScriptEvaluationResult::ResultType::kAborted:
++      return "exception";
++    case ScriptEvaluationResult::ResultType::kNotRun:
++    case ScriptEvaluationResult::ResultType::kSuccess:
++      return "return";
++  }
++  return "exception";
++}
++
+ const char* XTraceModuleImportPhase(v8::ModuleImportPhase phase) {
+   switch (phase) {
+     case v8::ModuleImportPhase::kSource:
+@@ -173,7 +186,8 @@ void LogXTraceClassicScriptEvaluate(
+           .Utf8()
+           .c_str());
+   XTraceLogger::LogEventWithOptionalAssetAndContext(
+-      "reverse", "return", "ClassicScript.evaluate", args,
++      "reverse", XTraceScriptEvaluationTerminalPhase(result.GetResultType()),
++      "ClassicScript.evaluate", args,
+       XTraceClassicScriptAssetKind(classic_script->SourceLocationType()),
+       script_url, classic_script->SourceText().ToString(), context_url,
+       context_origin);
+@@ -208,7 +222,8 @@ void LogXTraceModuleScriptEvaluate(ExecutionContext* execution_context,
+           .Utf8()
+           .c_str());
+   XTraceLogger::LogEventNoStackWithContext(
+-      "reverse", "return", "ModuleScript.evaluate", args, context_url,
++      "reverse", XTraceScriptEvaluationTerminalPhase(result.GetResultType()),
++      "ModuleScript.evaluate", args, context_url,
+       context_origin);
+ }
+ 
+@@ -682,11 +697,15 @@ ScriptEvaluationResult V8ScriptRunner::CompileAndRunScript(
+ 
+   ExecutionContext* execution_context = ExecutionContext::From(script_state);
+   DCHECK(execution_context->IsContextThread());
++  XTraceActivationScope xtrace_activation(
++      "reverse", "ClassicScript.evaluate", "[]",
++      XTraceContextUrl(execution_context), XTraceContextOrigin(execution_context));
+   int xtrace_script_id = v8::UnboundScript::kNoScriptId;
+   auto log_classic_result =
+       [&](ScriptEvaluationResult result) -> ScriptEvaluationResult {
+     LogXTraceClassicScriptEvaluate(execution_context, classic_script,
+                                    xtrace_script_id, result);
++    xtrace_activation.Complete();
+     return result;
+   };
+ 
+@@ -1029,10 +1048,14 @@ ScriptEvaluationResult V8ScriptRunner::EvaluateModule(
+   DCHECK_EQ(Modulator::From(script_state), module_script->SettingsObject());
+   ExecutionContext* execution_context = ExecutionContext::From(script_state);
+   v8::Isolate* isolate = script_state->GetIsolate();
++  XTraceActivationScope xtrace_activation(
++      "reverse", "ModuleScript.evaluate", "[]",
++      XTraceContextUrl(execution_context), XTraceContextOrigin(execution_context));
+   auto log_module_result =
+       [&](ScriptEvaluationResult result) -> ScriptEvaluationResult {
+     LogXTraceModuleScriptEvaluate(execution_context, module_script, phase,
+                                   result);
++    xtrace_activation.Complete();
+     return result;
+   };
+ 
+diff --git a/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc b/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
+index b2a722741b12b..c27c368e0cbe0 100644
+--- a/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
++++ b/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "third_party/blink/renderer/platform/xtrace/xtrace_logger.h"
+ 
++#include <algorithm>
+ #include <atomic>
+ #include <cctype>
+ #include <memory>
+@@ -39,17 +40,20 @@ constexpr char kFileEnv[] = "XTRACE_FILE";
+ constexpr char kCategoriesEnv[] = "XTRACE_CATEGORIES";
+ constexpr char kCaptureValuesEnv[] = "XTRACE_CAPTURE_VALUES";
+ constexpr char kCaptureAssetsEnv[] = "XTRACE_CAPTURE_ASSETS";
++constexpr char kCausalityEnv[] = "XTRACE_CAUSALITY";
+ constexpr char kEnableSwitch[] = "xtrace-enable";
+ constexpr char kFileSwitch[] = "xtrace-file";
+ constexpr char kCategoriesSwitch[] = "xtrace-categories";
+ constexpr char kCaptureValuesSwitch[] = "xtrace-capture-values";
+ constexpr char kCaptureAssetsSwitch[] = "xtrace-capture-assets";
++constexpr char kCausalitySwitch[] = "xtrace-causality";
+ 
+ struct XTraceConfig {
+   bool enabled = false;
+   std::string categories = "reverse,fingerprint";
+   std::string capture_values = "full";
+   std::string capture_assets = "full";
++  std::string causality = "off";
+   std::string session_id;
+   std::string trace_stem;
+ };
+@@ -118,6 +122,8 @@ XTraceConfig ReadConfigFromRuntime() {
+   config.capture_assets =
+       ReadRuntimeString(kCaptureAssetsSwitch, kCaptureAssetsEnv)
+           .value_or("full");
++  config.causality =
++      ReadRuntimeString(kCausalitySwitch, kCausalityEnv).value_or("off");
+   config.session_id = MakeSessionId();
+   if (trace_file_path) {
+     config.trace_stem =
+@@ -160,6 +166,51 @@ uint64_t NextSequenceNumber() {
+   return ++sequence;
+ }
+ 
++uint64_t NextActivationSequenceNumber() {
++  static std::atomic<uint64_t> sequence{0};
++  return ++sequence;
++}
++
++bool CausalitySyncEnabled(const XTraceConfig& config) {
++  return config.enabled && config.causality == "sync";
++}
++
++struct XTraceActivation {
++  uint64_t token = 0;
++  uint64_t parent_token = 0;
++  std::string api;
++  int depth = 0;
++  int64_t started_mono_us = 0;
++};
++
++struct CausalityFields {
++  uint64_t call_token = 0;
++  uint64_t parent_token = 0;
++  int depth = 0;
++  const char* kind = "singleton";
++  bool has_parent = false;
++  bool has_duration = false;
++  int64_t duration_us = 0;
++};
++
++std::vector<XTraceActivation>& ActivationStack() {
++  thread_local std::vector<XTraceActivation> stack;
++  return stack;
++}
++
++void AppendCallId(std::string* line,
++                  const XTraceConfig& config,
++                  uint64_t token) {
++  // session_id is generated locally from numeric process/time components, so
++  // it is JSON-safe. Keeping the activation token numeric avoids allocating a
++  // temporary call-id string on V8 runtime event paths.
++  line->append("\"");
++  line->append(config.session_id);
++  line->append(":");
++  line->append(base::NumberToString(token));
++  line->append("\"");
++}
++
+ std::string Sha1Ref(std::string_view value) {
+   return "sha1:" + base::HexEncode(base::SHA1HashString(value));
+ }
+@@ -336,6 +387,63 @@ mojom::blink::XTraceHost* GetXTraceHost() {
+   return host.get();
+ }
+ 
++bool IsActivationTerminal(const char* phase, const char* api) {
++  if (!phase || !api ||
++      (std::string_view(phase) != "return" &&
++       std::string_view(phase) != "exception")) {
++    return false;
++  }
++  const std::vector<XTraceActivation>& stack = ActivationStack();
++  return !stack.empty() && stack.back().api == api;
++}
++
++CausalityFields CurrentCausalityFields(const XTraceConfig& config,
++                                       const char* phase,
++                                       const char* api,
++                                       int64_t mono_time_us) {
++  const std::vector<XTraceActivation>& stack = ActivationStack();
++  if (IsActivationTerminal(phase, api)) {
++    const XTraceActivation& activation = stack.back();
++    return {.call_token = activation.token,
++            .parent_token = activation.parent_token,
++            .depth = activation.depth,
++            .kind = "paired",
++            .has_parent = activation.parent_token != 0,
++            .has_duration = true,
++            .duration_us = std::max<int64_t>(
++                0, mono_time_us - activation.started_mono_us)};
++  }
++
++  CausalityFields fields;
++  fields.call_token = NextActivationSequenceNumber();
++  if (!stack.empty()) {
++    fields.parent_token = stack.back().token;
++    fields.has_parent = true;
++    fields.depth = stack.back().depth + 1;
++  }
++  return fields;
++}
++
++void AppendCausalityFields(std::string* line,
++                           const XTraceConfig& config,
++                           const CausalityFields& fields) {
++  line->append(",\"call_id\":");
++  AppendCallId(line, config, fields.call_token);
++  line->append(",\"parent_id\":");
++  if (fields.has_parent) {
++    AppendCallId(line, config, fields.parent_token);
++  } else {
++    line->append("null");
++  }
++  line->append(",\"depth\":");
++  line->append(base::NumberToString(fields.depth));
++  line->append(",\"causality_kind\":");
++  line->append(QuoteJsonString(fields.kind));
++  line->append(",\"duration_us\":");
++  line->append(fields.has_duration ? base::NumberToString(fields.duration_us)
++                                   : "null");
++}
++
+ void LogEventWithSequence(const XTraceConfig& config,
+                           const char* category,
+                           const char* phase,
+@@ -345,7 +453,8 @@ void LogEventWithSequence(const XTraceConfig& config,
+                           std::string_view extra_fields,
+                           bool capture_stack,
+                           std::string_view frame_url,
+-                          std::string_view origin) {
++                          std::string_view origin,
++                          const CausalityFields* causal_fields = nullptr) {
+   const int64_t wall_time_us =
+       (base::Time::Now() - base::Time::UnixEpoch()).InMicroseconds();
+   const int64_t mono_time_us =
+@@ -356,7 +465,8 @@ void LogEventWithSequence(const XTraceConfig& config,
+   std::string stack_json = capture_stack ? CaptureJavaScriptStack() : "[]";
+ 
+   std::string line;
+-  line.append("{\"schema_version\":1");
++  line.append(CausalitySyncEnabled(config) ? "{\"schema_version\":2"
++                                           : "{\"schema_version\":1");
+   line.append(",\"event_id\":");
+   line.append(QuoteJsonString(event_id));
+   line.append(",\"session_id\":");
+@@ -394,6 +504,13 @@ void LogEventWithSequence(const XTraceConfig& config,
+   line.append(",\"result\":null");
+   line.append(",\"error\":null");
+   line.append(",\"truncated\":false");
++  if (CausalitySyncEnabled(config)) {
++    CausalityFields fields = causal_fields
++                                 ? *causal_fields
++                                 : CurrentCausalityFields(config, phase, api,
++                                                          mono_time_us);
++    AppendCausalityFields(&line, config, fields);
++  }
+   if (!extra_fields.empty()) {
+     line.append(",");
+     line.append(extra_fields);
+@@ -411,6 +528,63 @@ bool XTraceLogger::Enabled() {
+   return GetCachedConfig().enabled;
+ }
+ 
++bool XTraceLogger::CausalitySyncEnabled() {
++  return blink::CausalitySyncEnabled(GetCachedConfig());
++}
++
++uint64_t XTraceLogger::BeginActivation(const char* category,
++                                       const char* api,
++                                       const String& args_json,
++                                       const String& frame_url,
++                                       const String& origin) {
++  const XTraceConfig& config = GetCachedConfig();
++  if (!blink::CausalitySyncEnabled(config) ||
++      !CategoryEnabled(config, category)) {
++    return 0;
++  }
++
++  std::vector<XTraceActivation>& stack = ActivationStack();
++  XTraceActivation activation;
++  activation.token = NextActivationSequenceNumber();
++  activation.api = api;
++  activation.started_mono_us =
++      base::TimeTicks::Now().since_origin().InMicroseconds();
++  if (!stack.empty()) {
++    activation.parent_token = stack.back().token;
++    activation.depth = stack.back().depth + 1;
++  }
++
++  CausalityFields fields;
++  fields.call_token = activation.token;
++  fields.parent_token = activation.parent_token;
++  fields.depth = activation.depth;
++  fields.kind = "paired";
++  fields.has_parent = activation.parent_token != 0;
++  const uint64_t seq = NextSequenceNumber();
++  LogEventWithSequence(config, category, "call", api, args_json, seq,
++                       std::string_view(), false, frame_url.Utf8(),
++                       origin.Utf8(), &fields);
++  stack.push_back(std::move(activation));
++  return stack.back().token;
++}
++
++void XTraceLogger::CompleteActivation(uint64_t token) {
++  if (!token) {
++    return;
++  }
++  std::vector<XTraceActivation>& stack = ActivationStack();
++  if (!stack.empty() && stack.back().token == token) {
++    stack.pop_back();
++  }
++}
++
++void XTraceLogger::AbandonActivation(uint64_t token) {
++  // We intentionally do not synthesize a terminal event here: a scope can be
++  // abandoned before Blink has a ScriptEvaluationResult. The RAII path exists
++  // solely to keep subsequent events from inheriting a stale parent.
++  CompleteActivation(token);
++}
++
+ String XTraceLogger::QuoteJson(const String& value) {
+   return String::FromUtf8(QuoteJsonString(value.Utf8()));
+ }
+@@ -577,4 +751,21 @@ void XTraceLogger::LogEventWithOptionalAssetAndContext(
+                        extra_fields, false, frame_url_utf8, origin_utf8);
+ }
+ 
++XTraceActivationScope::XTraceActivationScope(const char* category,
++                                             const char* api,
++                                             const String& args_json,
++                                             const String& frame_url,
++                                             const String& origin)
++    : token_(XTraceLogger::BeginActivation(category, api, args_json, frame_url,
++                                           origin)) {}
++
++XTraceActivationScope::~XTraceActivationScope() {
++  XTraceLogger::AbandonActivation(token_);
++}
++
++void XTraceActivationScope::Complete() {
++  XTraceLogger::CompleteActivation(token_);
++  token_ = 0;
++}
++
+ }  // namespace blink
+diff --git a/third_party/blink/renderer/platform/xtrace/xtrace_logger.h b/third_party/blink/renderer/platform/xtrace/xtrace_logger.h
+index f621f4cc3f1db..c39f4f67b808a 100644
+--- a/third_party/blink/renderer/platform/xtrace/xtrace_logger.h
++++ b/third_party/blink/renderer/platform/xtrace/xtrace_logger.h
+@@ -5,6 +5,8 @@
+ #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_XTRACE_XTRACE_LOGGER_H_
+ #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_XTRACE_XTRACE_LOGGER_H_
+ 
++#include <cstdint>
++
+ #include "third_party/blink/renderer/platform/platform_export.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+ 
+@@ -13,6 +15,16 @@ namespace blink {
+ class PLATFORM_EXPORT XTraceLogger {
+  public:
+   static bool Enabled();
++  static bool CausalitySyncEnabled();
++  // Starts a paired renderer-side activation. The returned token is only
++  // meaningful on the current thread and is consumed by CompleteActivation.
++  static uint64_t BeginActivation(const char* category,
++                                  const char* api,
++                                  const String& args_json,
++                                  const String& frame_url,
++                                  const String& origin);
++  static void CompleteActivation(uint64_t token);
++  static void AbandonActivation(uint64_t token);
+   static void LogCall(const char* api, const String& args_json);
+   static void LogCall(const char* category,
+                       const char* api,
+@@ -65,6 +77,28 @@ class PLATFORM_EXPORT XTraceLogger {
+   static String NetworkCorrelationKey(const String& method, const String& url);
+ };
+ 
++// Keeps the renderer activation stack balanced across all early returns.
++// Script runners call Complete() only after the terminal record is emitted;
++// destruction otherwise discards the local stack entry without fabricating a
++// terminal event.
++class PLATFORM_EXPORT XTraceActivationScope {
++ public:
++  XTraceActivationScope(const char* category,
++                        const char* api,
++                        const String& args_json,
++                        const String& frame_url,
++                        const String& origin);
++  ~XTraceActivationScope();
++
++  XTraceActivationScope(const XTraceActivationScope&) = delete;
++  XTraceActivationScope& operator=(const XTraceActivationScope&) = delete;
++
++  void Complete();
++
++ private:
++  uint64_t token_ = 0;
++};
++
+ }  // namespace blink
+ 
+ #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_XTRACE_XTRACE_LOGGER_H_

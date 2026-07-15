@@ -1,0 +1,66 @@
+diff --git a/chrome/browser/chrome_content_browser_client.cc b/chrome/browser/chrome_content_browser_client.cc
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -6035,10 +6035,12 @@ constexpr char kXTraceMaxBodyBytesEnv[] = "XTRACE_MAX_BODY_BYTES";
+ constexpr char kXTraceMaxHeaderValueBytesEnv[] =
+     "XTRACE_MAX_HEADER_VALUE_BYTES";
++constexpr char kXTraceCausalityEnv[] = "XTRACE_CAUSALITY";
+ constexpr char kXTraceEnableSwitch[] = "xtrace-enable";
+ constexpr char kXTraceFileSwitch[] = "xtrace-file";
+ constexpr char kXTraceMaxBodyBytesSwitch[] = "xtrace-max-body-bytes";
+ constexpr char kXTraceMaxHeaderValueBytesSwitch[] =
+     "xtrace-max-header-value-bytes";
++constexpr char kXTraceCausalitySwitch[] = "xtrace-causality";
+ 
+ base::AtomicSequenceNumber g_xtrace_browser_network_sequence;
+ 
+@@ -6068,6 +6070,28 @@ bool IsXTraceBrowserNetworkEnabled() {
+   return ReadXTraceBrowserNetworkTraceFilePath().has_value();
+ }
+ 
++bool IsXTraceCausalitySyncEnabled() {
++  const base::CommandLine* command_line =
++      base::CommandLine::ForCurrentProcess();
++  if (command_line->HasSwitch(kXTraceCausalitySwitch)) {
++    return command_line->GetSwitchValueASCII(kXTraceCausalitySwitch) == "sync";
++  }
++  std::unique_ptr<base::Environment> env = base::Environment::Create();
++  return env->GetVar(kXTraceCausalityEnv).value_or("") == "sync";
++}
++
++void AddXTraceExternalCausality(base::DictValue* event) {
++  if (!IsXTraceCausalitySyncEnabled()) {
++    return;
++  }
++  event->Set("schema_version", 2);
++  event->Set("call_id", base::Value());
++  event->Set("parent_id", base::Value());
++  event->Set("depth", 0);
++  event->Set("causality_kind", "external");
++  event->Set("duration_us", base::Value());
++}
++
+ uint64_t ReadXTraceBrowserNetworkUInt64(const char* switch_name,
+                                         const char* env_name,
+                                         uint64_t default_value) {
+@@ -6361,5 +6384,6 @@ std::string CreateXTraceBrowserNetworkEventJson(
+ 
+   base::DictValue event;
+   event.Set("schema_version", 1);
++  AddXTraceExternalCausality(&event);
+   event.Set("event_id", base::StrCat({"browser-network:", base::NumberToString(pid),
+                                       ":", base::NumberToString(seq)}));
+@@ -6447,5 +6471,6 @@ std::string CreateXTraceBrowserNetworkResponseEventJson(
+ 
+   base::DictValue event;
+   event.Set("schema_version", 1);
++  AddXTraceExternalCausality(&event);
+   event.Set("event_id", base::StrCat({"browser-network:", base::NumberToString(pid),
+                                       ":", base::NumberToString(seq)}));
+@@ -6556,5 +6581,6 @@ std::string CreateXTraceBrowserNetworkCompleteEventJson(
+ 
+   base::DictValue event;
+   event.Set("schema_version", 1);
++  AddXTraceExternalCausality(&event);
+   event.Set("event_id", base::StrCat({"browser-network:", base::NumberToString(pid),
+                                       ":", base::NumberToString(seq)}));
