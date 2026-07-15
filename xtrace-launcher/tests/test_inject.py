@@ -113,6 +113,25 @@ class AlignAndAppendTests(unittest.TestCase):
             self.assertEqual(inject.align_and_append(Path(d) / "no.ndjson",
                                                      Path(d) / "no.inject.ndjson"), 0)
 
+    def test_schema_v2_injected_events_are_external(self):
+        with TemporaryDirectory() as d:
+            native = Path(d) / "trace.ndjson"
+            injected = Path(d) / "trace.inject.ndjson"
+            native.write_text(json.dumps({
+                "api": "A", "mono_time_us": 500, "wall_time_us": 1_800_000_000_000_000,
+            }) + "\n")
+            injected.write_text(json.dumps({
+                "api": "JSON.stringify", "wall_time_us": 1_800_000_000_000_100, "args": [],
+            }) + "\n")
+            self.assertEqual(inject.align_and_append(native, injected, schema_version=2), 1)
+            added = json.loads(native.read_text().splitlines()[-1])
+            self.assertEqual(added["schema_version"], 2)
+            self.assertEqual(added["causality_kind"], "external")
+            self.assertIsNone(added["call_id"])
+            self.assertIsNone(added["parent_id"])
+            self.assertEqual(added["depth"], 0)
+            self.assertIsNone(added["duration_us"])
+
     def test_legacy_native_trace_does_not_gain_partial_global_sequence(self):
         with TemporaryDirectory() as d:
             native = Path(d) / "trace.ndjson"

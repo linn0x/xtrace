@@ -1838,6 +1838,14 @@ SCHEMA_V1_PHASES = {
     "complete",
     "iterate",
 }
+SCHEMA_V2_REQUIRED_FIELDS = SCHEMA_V1_REQUIRED_FIELDS + [
+    "call_id",
+    "parent_id",
+    "depth",
+    "causality_kind",
+    "duration_us",
+]
+SCHEMA_V2_CAUSALITY_KINDS = {"paired", "singleton", "external"}
 REDACTED_VALUE_MARKERS = {
     "redacted",
     "<redacted>",
@@ -1898,7 +1906,6 @@ def validate_schema_v1_event(event: dict, index: int) -> None:
 
     if event["phase"] not in SCHEMA_V1_PHASES:
         raise TraceValidationError(f"Event {index} has invalid phase: {event['phase']!r}")
-
     if not isinstance(event["truncated"], bool):
         raise TraceValidationError(f"Event {index} has non-boolean truncated field")
 
@@ -1915,6 +1922,118 @@ def validate_schema_v1_event(event: dict, index: int) -> None:
         for field in ("original_size", "preview", "hash"):
             if field not in truncation:
                 raise TraceValidationError(f"Event {index} truncation metadata missing {field}")
+
+
+def validate_schema_v2_event(event: dict, index: int) -> None:
+    """Validate the per-record portion of the schema v2 causal contract."""
+    if event.get("schema_version") != 2:
+        raise TraceValidationError(
+            f"Event {index} has schema_version={event.get('schema_version')!r}, expected 2"
+        )
+    missing = [field for field in SCHEMA_V2_REQUIRED_FIELDS if field not in event]
+    if missing:
+        raise TraceValidationError(f"Event {index} missing schema v2 fields: {', '.join(missing)}")
+    if event["phase"] not in SCHEMA_V1_PHASES:
+        raise TraceValidationError(f"Event {index} has invalid phase: {event['phase']!r}")
+    if not isinstance(event["truncated"], bool):
+        raise TraceValidationError(f"Event {index} has non-boolean truncated field")
+    if event["causality_kind"] not in SCHEMA_V2_CAUSALITY_KINDS:
+        raise TraceValidationError(
+            f"Event {index} has invalid causality_kind: {event['causality_kind']!r}"
+        )
+    if not isinstance(event["depth"], int) or isinstance(event["depth"], bool) or event["depth"] < 0:
+        raise TraceValidationError(f"Event {index} has invalid non-negative depth")
+    if event["parent_id"] is not None and not isinstance(event["parent_id"], str):
+        raise TraceValidationError(f"Event {index} has non-string parent_id")
+    if event["duration_us"] is not None and (
+        not isinstance(event["duration_us"], int)
+        or isinstance(event["duration_us"], bool)
+        or event["duration_us"] < 0
+    ):
+        raise TraceValidationError(f"Event {index} has invalid duration_us")
+    if event["causality_kind"] == "external":
+        if any(event[field] is not None for field in ("call_id", "parent_id", "duration_us")):
+            raise TraceValidationError(f"Event {index} external record must have empty causal IDs/duration")
+        if event["depth"] != 0:
+            raise TraceValidationError(f"Event {index} external record must have depth 0")
+    else:
+        if not isinstance(event["call_id"], str) or not event["call_id"]:
+            raise TraceValidationError(f"Event {index} causal record needs non-empty call_id")
+        session_prefix, separator, activation_seq = event["call_id"].rpartition(":")
+        if (
+            not separator
+            or session_prefix != event["session_id"]
+            or not activation_seq.isdecimal()
+        ):
+            raise TraceValidationError(
+                f"Event {index} call_id must be session_id:activation_seq"
+            )
+        if event["causality_kind"] == "singleton" and event["duration_us"] is not None:
+            raise TraceValidationError(f"Event {index} singleton record must have duration_us=null")
+
+
+def validate_causality(events: list[dict]) -> None:
+    """Validate the cross-event tree and paired activation invariants for v2."""
+    nodes: dict[str, tuple[int, int]] = {}
+    pairs: dict[str, dict] = {}
+    for index, event in enumerate(events, start=1):
+        kind = event["causality_kind"]
+        if kind == "external":
+            continue
+        call_id = event["call_id"]
+        parent_id = event["parent_id"]
+        depth = event["depth"]
+        phase = event["phase"]
+        is_paired_call = kind == "paired" and phase == "call"
+        is_paired_terminal = kind == "paired" and phase in {"return", "exception"}
+        if kind == "paired" and not (is_paired_call or is_paired_terminal):
+            raise TraceValidationError(f"Event {index} paired record must be call, return, or exception")
+        if kind == "paired" and is_paired_call and event["duration_us"] is not None:
+            raise TraceValidationError(f"Event {index} paired call must have duration_us=null")
+        if kind == "paired" and is_paired_terminal and event["duration_us"] is None:
+            raise TraceValidationError(f"Event {index} paired terminal needs duration_us")
+
+        if is_paired_terminal:
+            pair = pairs.get(call_id)
+            if pair is None:
+                raise TraceValidationError(f"Event {index} has orphan paired terminal {call_id}")
+            if pair.get("terminal_index") is not None:
+                raise TraceValidationError(f"Event {index} has duplicate paired terminal {call_id}")
+            if (
+                pair["api"] != event["api"]
+                or pair["parent_id"] != parent_id
+                or pair["depth"] != depth
+            ):
+                raise TraceValidationError(f"Event {index} paired terminal disagrees with its call")
+            pair["terminal_index"] = index
+            continue
+
+        if call_id in nodes:
+            raise TraceValidationError(f"Event {index} reuses causal call_id {call_id}")
+        if parent_id is None:
+            if depth != 0:
+                raise TraceValidationError(f"Event {index} root causal node must have depth 0")
+        else:
+            parent_session, separator, _ = parent_id.rpartition(":")
+            if not separator or parent_session != event["session_id"]:
+                raise TraceValidationError(f"Event {index} crosses producer sessions")
+            parent = nodes.get(parent_id)
+            if parent is None:
+                raise TraceValidationError(f"Event {index} has missing or forward parent {parent_id}")
+            if depth != parent[1] + 1:
+                raise TraceValidationError(f"Event {index} depth does not follow parent {parent_id}")
+        nodes[call_id] = (index, depth)
+        if is_paired_call:
+            pairs[call_id] = {
+                "api": event["api"],
+                "parent_id": parent_id,
+                "depth": depth,
+                "terminal_index": None,
+            }
+
+    unclosed = [call_id for call_id, pair in pairs.items() if pair["terminal_index"] is None]
+    if unclosed:
+        raise TraceValidationError("Unclosed paired activations: " + ", ".join(unclosed[:20]))
 
 
 def validate_global_sequence(events: list[dict]) -> None:
@@ -3158,11 +3277,16 @@ def validate_trace(
 ) -> None:
     events = load_events(path)
     if schema_version is not None:
-        if schema_version != 1:
+        if schema_version not in (1, 2):
             raise TraceValidationError(f"Unsupported schema version: {schema_version}")
         for index, event in enumerate(events, start=1):
-            validate_schema_v1_event(event, index)
+            if schema_version == 1:
+                validate_schema_v1_event(event, index)
+            else:
+                validate_schema_v2_event(event, index)
         validate_global_sequence(events)
+        if schema_version == 2:
+            validate_causality(events)
 
     if require_context_for:
         validate_context_for_apis(events, require_context_for)
@@ -3269,7 +3393,7 @@ def validate_trace(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", choices=sorted(PROFILE_EXPECTED_APIS), default=None)
-    parser.add_argument("--schema-version", type=int, choices=[1], default=None)
+    parser.add_argument("--schema-version", type=int, choices=[1, 2], default=None)
     parser.add_argument("trace", type=Path)
     parser.add_argument("--expect", action="append", default=[])
     parser.add_argument("--require-stack-for", action="append", default=[])

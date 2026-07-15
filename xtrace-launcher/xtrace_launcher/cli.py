@@ -45,6 +45,7 @@ def build_chromium_command(
     categories: str = "reverse,fingerprint",
     capture_values: str = "full",
     capture_assets: str = "full",
+    causality: str = "off",
     max_body_bytes: int = 0,
     max_header_value_bytes: int = 0,
     capture_response_body: bool = False,
@@ -75,6 +76,7 @@ def build_chromium_command(
         f"--xtrace-categories={categories}",
         f"--xtrace-capture-values={capture_values}",
         f"--xtrace-capture-assets={capture_assets}",
+        f"--xtrace-causality={causality}",
         f"--user-data-dir={profile_path}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -105,6 +107,7 @@ def build_chromium_command(
     env["XTRACE_CATEGORIES"] = categories
     env["XTRACE_CAPTURE_VALUES"] = capture_values
     env["XTRACE_CAPTURE_ASSETS"] = capture_assets
+    env["XTRACE_CAUSALITY"] = causality
     env["XTRACE_CAPTURE_RESPONSE_BODY"] = "1" if capture_response_body else "0"
     if max_body_bytes > 0:
         env["XTRACE_MAX_BODY_BYTES"] = str(max_body_bytes)
@@ -119,6 +122,7 @@ def build_validate_command(
     validator: Path | None = None,
     profile: str = "generic-vmp",
     strict_capture: bool = True,
+    schema_version: int | None = None,
     extra_args: Iterable[str] = (),
 ) -> list[str]:
     command = [
@@ -130,6 +134,11 @@ def build_validate_command(
     if strict_capture:
         command.append("--strict-capture")
     command.extend(extra_args)
+    # Keep an explicitly selected schema authoritative over free-form validator
+    # arguments. In particular, a sync causality capture must not accidentally
+    # be validated as schema v1 by a repeated --schema-version option.
+    if schema_version is not None:
+        command.extend(["--schema-version", str(schema_version)])
     command.append(os.fspath(trace))
     return command
 
@@ -169,6 +178,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--xtrace-categories", default="reverse,fingerprint")
     run.add_argument("--xtrace-capture-values", choices=["full", "summary", "args-only"], default="full")
     run.add_argument("--xtrace-capture-assets", choices=["off", "summary", "full"], default="full")
+    run.add_argument(
+        "--xtrace-causality",
+        choices=["off", "sync"],
+        default="off",
+        help="opt-in schema v2 synchronous renderer causality; default preserves schema v1",
+    )
     run.add_argument(
         "--xtrace-max-body-bytes",
         type=int,
@@ -293,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
             categories=args.xtrace_categories,
             capture_values=args.xtrace_capture_values,
             capture_assets=args.xtrace_capture_assets,
+            causality=args.xtrace_causality,
             max_body_bytes=args.xtrace_max_body_bytes,
             max_header_value_bytes=args.xtrace_max_header_value_bytes,
             capture_response_body=args.xtrace_capture_response_body,
@@ -329,7 +345,10 @@ def main(argv: list[str] | None = None) -> int:
         if injector is not None:
             stop_event.set()          # Chromium exit drops the CDP socket; recv unblocks
             injector.join(timeout=10)
-            appended = inject.align_and_append(log_path, injected_path)
+            appended = inject.align_and_append(
+                log_path, injected_path,
+                schema_version=2 if args.xtrace_causality == "sync" else 1,
+            )
             print(f"XTrace inject: {counter['n']} events captured, {appended} merged into trace")
 
         if exit_code != 0:
@@ -348,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
             validator=validator,
             profile=args.validate_profile,
             strict_capture=args.strict_capture,
+            schema_version=2 if args.xtrace_causality == "sync" else None,
             extra_args=args.extra_validate_arg,
         )
         return subprocess.run(validate_command).returncode

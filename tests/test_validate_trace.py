@@ -36,7 +36,94 @@ def schema_v1_event(api: str, **overrides):
     return event
 
 
+def schema_v2_event(api: str, *, call_id: str, parent_id=None, depth=0,
+                    kind="singleton", phase="call", duration_us=None, **overrides):
+    if isinstance(call_id, str) and "session_id" not in overrides:
+        overrides["session_id"] = call_id.rpartition(":")[0]
+    event = schema_v1_event(
+        api,
+        schema_version=2,
+        event_id=f"event:{call_id}:{phase}",
+        phase=phase,
+        t=phase,
+        call_id=call_id,
+        parent_id=parent_id,
+        depth=depth,
+        causality_kind=kind,
+        duration_us=duration_us,
+    )
+    event.update(overrides)
+    return event
+
+
 class ValidateTraceTests(unittest.TestCase):
+    def test_schema_v2_accepts_nested_paired_tree_and_external_record(self):
+        rows = [
+            schema_v2_event("ClassicScript.evaluate", call_id="renderer:1", kind="paired"),
+            schema_v2_event("JSON.stringify", call_id="renderer:2", parent_id="renderer:1", depth=1),
+            schema_v2_event("ClassicScript.evaluate", call_id="renderer:1", kind="paired", phase="return", duration_us=42),
+            schema_v2_event("BrowserNetwork.request", call_id=None, kind="external", depth=0,
+                            parent_id=None, duration_us=None),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            trace = Path(tmp) / "trace.ndjson"
+            trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            validate_trace(trace, expected=[], schema_version=2)
+
+    def test_schema_v2_rejects_cross_session_parent_and_orphan_terminal(self):
+        cases = [
+            [
+                schema_v2_event("root", call_id="one:1", kind="singleton"),
+                schema_v2_event("child", call_id="two:1", parent_id="one:1", depth=1),
+            ],
+            [schema_v2_event("root", call_id="one:1", kind="paired", phase="return", duration_us=1)],
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            for number, rows in enumerate(cases):
+                trace = Path(tmp) / f"bad-{number}.ndjson"
+                trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+                with self.assertRaises(TraceValidationError):
+                    validate_trace(trace, expected=[], schema_version=2)
+
+    def test_schema_v2_accepts_exception_terminal(self):
+        rows = [
+            schema_v2_event("ModuleScript.evaluate", call_id="renderer:9", kind="paired"),
+            schema_v2_event("ModuleScript.evaluate", call_id="renderer:9", kind="paired",
+                            phase="exception", duration_us=7),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            trace = Path(tmp) / "exception.ndjson"
+            trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            validate_trace(trace, expected=[], schema_version=2)
+
+    def test_schema_v2_rejects_paired_terminal_with_different_api(self):
+        rows = [
+            schema_v2_event("ClassicScript.evaluate", call_id="renderer:1", kind="paired"),
+            schema_v2_event("JSON.stringify", call_id="renderer:1", kind="paired",
+                            phase="return", duration_us=7),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            trace = Path(tmp) / "mismatched-pair.ndjson"
+            trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            with self.assertRaises(TraceValidationError):
+                validate_trace(trace, expected=[], schema_version=2)
+
+    def test_schema_v2_rejects_bad_depth_unclosed_pair_and_mixed_schema(self):
+        cases = [
+            [
+                schema_v2_event("root", call_id="one:1", kind="singleton"),
+                schema_v2_event("child", call_id="one:2", parent_id="one:1", depth=2),
+            ],
+            [schema_v2_event("root", call_id="one:1", kind="paired")],
+            [schema_v2_event("root", call_id="one:1"), schema_v1_event("legacy")],
+            [schema_v2_event("root", call_id="one:1", depth=-1)],
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            for number, rows in enumerate(cases):
+                trace = Path(tmp) / f"bad-{number}.ndjson"
+                trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+                with self.assertRaises(TraceValidationError):
+                    validate_trace(trace, expected=[], schema_version=2)
     def test_load_events_adds_file_index_without_requiring_seq_monotonicity(self):
         rows = [
             schema_v1_event("DataView.getUint32", seq=3, event_id="session-1:3"),

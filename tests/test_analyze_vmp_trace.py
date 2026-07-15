@@ -47,6 +47,27 @@ def event(api, seq, args, stack=None, phase="call", category="reverse"):
 
 
 class AnalyzeVmpTraceTests(unittest.TestCase):
+    def test_schema_v2_causality_summary_has_bounded_tree_and_v1_fallback(self):
+        root = event("ClassicScript.evaluate", 1, {})
+        root.update({"schema_version": 2, "call_id": "s:1", "parent_id": None,
+                     "depth": 0, "causality_kind": "paired", "duration_us": None})
+        child = event("JSON.stringify", 2, {})
+        child.update({"schema_version": 2, "call_id": "s:2", "parent_id": "s:1",
+                      "depth": 1, "causality_kind": "singleton", "duration_us": None})
+        terminal = event("ClassicScript.evaluate", 3, {}, phase="return")
+        terminal.update({"schema_version": 2, "call_id": "s:1", "parent_id": None,
+                         "depth": 0, "causality_kind": "paired", "duration_us": 12})
+        external = event("BrowserNetwork.request", 4, {})
+        external.update({"schema_version": 2, "call_id": None, "parent_id": None,
+                         "depth": 0, "causality_kind": "external", "duration_us": None})
+        causality = summarize([root, child, terminal, external])["causality"]
+        self.assertTrue(causality["available"])
+        self.assertEqual(causality["paired_activations"], 1)
+        self.assertEqual(causality["singleton_nodes"], 1)
+        self.assertEqual(causality["external_nodes"], 1)
+        self.assertEqual(causality["tree"][0]["children"][0]["api"], "JSON.stringify")
+        self.assertFalse(summarize([event("JSON.stringify", 1, {})])["causality"]["available"])
+
     def test_summarize_detects_renderer_materialization_before_network(self):
         signed_url = (
             "https://www.example.test/api/post/item_list/?cursor=0"

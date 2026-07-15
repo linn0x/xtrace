@@ -53,6 +53,7 @@ class LauncherTests(unittest.TestCase):
             self.assertIn("--xtrace-categories=reverse,fingerprint", command)
             self.assertIn("--xtrace-capture-values=full", command)
             self.assertIn("--xtrace-capture-assets=full", command)
+            self.assertIn("--xtrace-causality=off", command)
             self.assertFalse(any(arg.startswith("--xtrace-max-value-bytes=") for arg in command))
             self.assertFalse(any(arg.startswith("--xtrace-asset-max-bytes=") for arg in command))
             self.assertIn(f"--user-data-dir={profile_path}", command)
@@ -62,6 +63,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(env["XTRACE_CATEGORIES"], "reverse,fingerprint")
             self.assertEqual(env["XTRACE_CAPTURE_VALUES"], "full")
             self.assertEqual(env["XTRACE_CAPTURE_ASSETS"], "full")
+            self.assertEqual(env["XTRACE_CAUSALITY"], "off")
             self.assertNotIn("XTRACE_MAX_VALUE_BYTES", env)
             self.assertNotIn("XTRACE_ASSET_MAX_BYTES", env)
             self.assertNotIn("XTRACE_MAX_BODY_BYTES", env)
@@ -112,6 +114,17 @@ class LauncherTests(unittest.TestCase):
             self.assertNotIn("XTRACE_MAX_BODY_BYTES", env)
             self.assertNotIn("XTRACE_MAX_HEADER_VALUE_BYTES", env)
 
+    def test_build_command_enables_schema_v2_causality_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            command, env, _, _ = build_chromium_command(
+                chromium=Path("/tmp/Chromium.app"),
+                url="https://example.test",
+                log_dir=Path(tmp),
+                causality="sync",
+            )
+            self.assertIn("--xtrace-causality=sync", command)
+            self.assertEqual(env["XTRACE_CAUSALITY"], "sync")
+
     def test_build_command_allows_explicit_body_and_header_caps(self):
         with tempfile.TemporaryDirectory() as tmp:
             command, env, _, _ = build_chromium_command(
@@ -161,6 +174,19 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("generic-vmp", command)
         self.assertIn("--strict-capture", command)
         self.assertEqual(command[-1], os.fspath(trace))
+
+    def test_build_validate_command_keeps_explicit_schema_after_extra_args(self):
+        trace = Path("/tmp/causality.ndjson")
+        command = build_validate_command(
+            trace=trace,
+            schema_version=2,
+            extra_args=["--schema-version=1"],
+        )
+
+        self.assertEqual(
+            command[-4:],
+            ["--schema-version=1", "--schema-version", "2", os.fspath(trace)],
+        )
 
     def test_main_missing_executable_returns_2_without_creating_log_dir(self):
         with tempfile.TemporaryDirectory() as tmp:

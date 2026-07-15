@@ -388,10 +388,13 @@ def _dumps_event(e) -> str:
     return json.dumps(_sanitize_for_json(e), ensure_ascii=False, default=str)
 
 
-def align_and_append(native_trace, injected_path):
+def align_and_append(native_trace, injected_path, *, schema_version=1):
     """Stamp injected events with a monotonic clock derived from the native trace's
     (mono_time_us, wall_time_us) pairs, then append them to the native trace so a
-    single NDJSON carries both. Returns the number of events appended."""
+    single NDJSON carries both. schema_version=2 marks injected records as
+    external observation boundaries. Returns the number of events appended."""
+    if schema_version not in (1, 2):
+        raise ValueError(f"unsupported schema version: {schema_version}")
     native_trace, injected_path = str(native_trace), str(injected_path)
     if not (os.path.exists(native_trace) and os.path.exists(injected_path)):
         return 0
@@ -444,7 +447,7 @@ def align_and_append(native_trace, injected_path):
             seq += 1
             appended += 1
             phase = e.get("phase") or e.get("t") or "call"
-            e["schema_version"] = 1
+            e["schema_version"] = schema_version
             e["session_id"] = session_id
             e["seq"] = appended
             e["session_seq"] = appended
@@ -462,5 +465,13 @@ def align_and_append(native_trace, injected_path):
             e.setdefault("result", None)
             e.setdefault("error", None)
             e.setdefault("truncated", False)
+            if schema_version == 2:
+                # CDP bindings observe page execution across a process/API
+                # boundary. They deliberately do not claim a renderer parent.
+                e["call_id"] = None
+                e["parent_id"] = None
+                e["depth"] = 0
+                e["causality_kind"] = "external"
+                e["duration_us"] = None
             dst.write(_dumps_event(e) + "\n")
     return appended

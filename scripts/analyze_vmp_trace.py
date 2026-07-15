@@ -1420,6 +1420,104 @@ def first_marker_event(
     return min(matches, key=event_order) if matches else None
 
 
+def build_causality_summary(
+    events: list[dict[str, Any]],
+    *,
+    max_depth: int = 4,
+    max_nodes: int = 80,
+) -> dict[str, Any]:
+    """Return a bounded schema-v2 causality view without changing v1 analysis."""
+    causal_events = [event for event in events if event.get("schema_version") == 2]
+    if not causal_events:
+        return {
+            "available": False,
+            "coverage": 0.0,
+            "roots": [],
+            "paired_activations": 0,
+            "singleton_nodes": 0,
+            "external_nodes": 0,
+            "max_depth": 0,
+            "exception_count": 0,
+            "unclosed_count": 0,
+            "tree": [],
+        }
+
+    nodes: dict[str, dict[str, Any]] = {}
+    children: dict[str, list[str]] = {}
+    paired_calls: dict[str, dict[str, Any]] = {}
+    paired_terminals: set[str] = set()
+    external_nodes = 0
+    singleton_nodes = 0
+    exception_count = 0
+    max_seen_depth = 0
+    root_ids: list[str] = []
+    for event in causal_events:
+        kind = event.get("causality_kind")
+        if kind == "external":
+            external_nodes += 1
+            continue
+        call_id = event.get("call_id")
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        if kind == "paired" and event.get("phase") in {"return", "exception"}:
+            paired_terminals.add(call_id)
+            if event.get("phase") == "exception":
+                exception_count += 1
+            continue
+        if kind == "singleton":
+            singleton_nodes += 1
+        if kind == "paired":
+            paired_calls[call_id] = event
+        depth = event.get("depth") if isinstance(event.get("depth"), int) else 0
+        max_seen_depth = max(max_seen_depth, depth)
+        nodes[call_id] = event
+        parent_id = event.get("parent_id")
+        if isinstance(parent_id, str) and parent_id:
+            children.setdefault(parent_id, []).append(call_id)
+        else:
+            root_ids.append(call_id)
+
+    emitted = 0
+
+    def tree_node(call_id: str, depth: int) -> dict[str, Any] | None:
+        nonlocal emitted
+        if emitted >= max_nodes:
+            return None
+        event = nodes.get(call_id)
+        if event is None:
+            return None
+        emitted += 1
+        record = {
+            "call_id": call_id,
+            "api": event.get("api"),
+            "phase": event.get("phase"),
+            "kind": event.get("causality_kind"),
+            "depth": event.get("depth"),
+            "children": [],
+        }
+        if depth < max_depth:
+            for child_id in children.get(call_id, []):
+                child = tree_node(child_id, depth + 1)
+                if child is not None:
+                    record["children"].append(child)
+        return record
+
+    tree = [node for root in root_ids if (node := tree_node(root, 0)) is not None]
+    unclosed_count = len(set(paired_calls) - paired_terminals)
+    return {
+        "available": True,
+        "coverage": len(causal_events) / len(events) if events else 0.0,
+        "roots": root_ids,
+        "paired_activations": len(paired_calls),
+        "singleton_nodes": singleton_nodes,
+        "external_nodes": external_nodes,
+        "max_depth": max_seen_depth,
+        "exception_count": exception_count,
+        "unclosed_count": unclosed_count,
+        "tree": tree,
+    }
+
+
 def summarize(
     events: list[dict[str, Any]],
     *,
@@ -1429,6 +1527,8 @@ def summarize(
     max_timeline_events: int = 80,
     asset_sources: dict[str, Any] | None = None,
     max_source_snippets: int = 80,
+    max_causality_depth: int = 4,
+    max_causality_nodes: int = 80,
 ) -> dict[str, Any]:
     markers = profile_marker_params(profile, marker_params)
     api_counts = Counter(str(event.get("api", "")) for event in events)
@@ -1661,6 +1761,11 @@ def summarize(
         ),
         "conclusions": conclusions,
         "gaps": gaps,
+        "causality": build_causality_summary(
+            events,
+            max_depth=max_causality_depth,
+            max_nodes=max_causality_nodes,
+        ),
         "_source_snippets": source_analysis["source_snippets"],
     }
     if profile == PROFILE_GENERIC_VMP:
@@ -1711,6 +1816,16 @@ def print_summary(summary: dict[str, Any], trace: Path) -> None:
     if target_params:
         print(f"Target params: {','.join(target_params)}")
     print(f"Events: {summary['event_count']}")
+    causality = summary.get("causality", {})
+    if causality.get("available"):
+        print(
+            "Causality: "
+            f"coverage={causality.get('coverage', 0):.1%} "
+            f"paired={causality.get('paired_activations', 0)} "
+            f"singleton={causality.get('singleton_nodes', 0)} "
+            f"external={causality.get('external_nodes', 0)} "
+            f"max_depth={causality.get('max_depth', 0)}"
+        )
     print(f"Script registry entries: {summary.get('script_registry_count', 0)}")
     print(
         "Dispatch light resolved/unresolved: "
@@ -1875,6 +1990,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--timeline-window-us", type=int, default=15_000_000)
     parser.add_argument("--max-timeline-events", type=int, default=80)
     parser.add_argument("--max-source-snippets", type=int, default=80)
+    parser.add_argument("--max-causality-depth", type=int, default=4)
+    parser.add_argument("--max-causality-nodes", type=int, default=80)
     parser.add_argument(
         "--skip-bad-json",
         action="store_true",
@@ -1899,6 +2016,8 @@ def main(argv: list[str] | None = None) -> int:
             max_timeline_events=args.max_timeline_events,
             asset_sources=asset_sources,
             max_source_snippets=args.max_source_snippets,
+            max_causality_depth=args.max_causality_depth,
+            max_causality_nodes=args.max_causality_nodes,
         )
         if args.source_snippets_output:
             write_source_snippets(summary, args.source_snippets_output)

@@ -228,6 +228,7 @@ tests/             # 脚本 / 分析器的单元测试
 | [`docs/superpowers/plans/2026-06-27-chromium-xtrace-proof-of-life.md`](docs/superpowers/plans/2026-06-27-chromium-xtrace-proof-of-life.md) | 实施计划 |
 | [`docs/chromium-build.md`](docs/chromium-build.md) | 构建说明、固定 revision、GN 参数、排错 |
 | [`docs/trace-schema-v1.md`](docs/trace-schema-v1.md) | Trace schema |
+| [`docs/trace-schema-v2.md`](docs/trace-schema-v2.md) | 因果 schema v2(`--xtrace-causality=sync` opt-in) |
 | [`docs/sign-analysis-recipe.md`](docs/sign-analysis-recipe.md) | 签名分析 recipe |
 | [`docs/trace-log-improvements.md`](docs/trace-log-improvements.md) | Trace 日志改进 |
 | [`docs/runtime-trace-plan.md`](docs/runtime-trace-plan.md) | 运行时 trace 路线图 |
@@ -236,6 +237,8 @@ tests/             # 脚本 / 分析器的单元测试
 
 - `patches/0001-xtrace-native-logger.patch` → `chromium/src`(Blink / 浏览器网络日志)
 - `patches/0002-xtrace-v8-vmp-hooks.patch` → `chromium/src/v8`(JSVMP 相关运行时 hooks)
+- `patches/0003-xtrace-schema-v2-renderer.patch` → `chromium/src`(渲染器同步因果身份,opt-in)
+- `patches/0004-xtrace-schema-v2-browser.patch` → `chromium/src`(网络边界记录标记 external)
 
 ---
 
