@@ -1,8 +1,8 @@
 diff --git a/src/builtins/arm64/builtins-arm64.cc b/src/builtins/arm64/builtins-arm64.cc
-index f7c9c32e61d..a7f0769da32 100644
+index f7c9c32e61d..edc466704cd 100644
 --- a/src/builtins/arm64/builtins-arm64.cc
 +++ b/src/builtins/arm64/builtins-arm64.cc
-@@ -49,6 +49,63 @@ namespace internal {
+@@ -49,6 +49,67 @@ namespace internal {
  
  namespace {
  constexpr int kReceiverOnStackSize = kSystemPointerSize;
@@ -21,6 +21,9 @@ index f7c9c32e61d..a7f0769da32 100644
 +  ASM_CODE_COMMENT(masm);
 +  {
 +    FrameScope scope(masm, StackFrame::INTERNAL);
++    // x0 is an untagged argument count at every current entry point. Keep the
++    // saved internal-frame slot GC-safe while the runtime hook is active.
++    __ SmiTag(x0);
 +    __ Push(x0, x1, x2, x3, x4, x5);
 +    {
 +      UseScratchRegisterScope temps(masm);
@@ -42,6 +45,7 @@ index f7c9c32e61d..a7f0769da32 100644
 +    }
 +    __ CallRuntime(Runtime::kXTraceVmpRuntimeDispatch);
 +    __ Pop(x5, x4, x3, x2, x1, x0);
++    __ SmiUntag(x0);
 +  }
 +}
 +
@@ -66,7 +70,7 @@ index f7c9c32e61d..a7f0769da32 100644
  }  // namespace
  
  void Builtins::Generate_Adaptor(MacroAssembler* masm,
-@@ -338,6 +395,7 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
+@@ -338,6 +399,7 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
    __ B(eq, &do_throw);
  
    __ Bind(&leave_and_return);
@@ -74,7 +78,7 @@ index f7c9c32e61d..a7f0769da32 100644
    // Restore arguments count from the frame.
    __ Ldr(x1, MemOperand(fp, ConstructFrameConstants::kLengthOffset));
    // Leave construct frame.
-@@ -1911,6 +1969,7 @@ void Builtins::Generate_InterpreterPushArgsThenFastConstructFunction(
+@@ -1911,6 +1973,7 @@ void Builtins::Generate_InterpreterPushArgsThenFastConstructFunction(
    __ B(eq, &do_throw);
  
    __ Bind(&leave_and_return);
@@ -82,7 +86,7 @@ index f7c9c32e61d..a7f0769da32 100644
    // Leave construct frame.
    __ LeaveFrame(StackFrame::FAST_CONSTRUCT);
    __ Ret();
-@@ -1929,6 +1988,7 @@ void Builtins::Generate_InterpreterPushArgsThenFastConstructFunction(
+@@ -1929,6 +1992,7 @@ void Builtins::Generate_InterpreterPushArgsThenFastConstructFunction(
    __ bind(&builtin_call);
    // TODO(victorgomes): Check the possibility to turn this into a tailcall.
    __ InvokeFunctionWithNewTarget(x1, x3, x0, InvokeType::kCall);
@@ -90,7 +94,7 @@ index f7c9c32e61d..a7f0769da32 100644
    __ LeaveFrame(StackFrame::FAST_CONSTRUCT);
    __ Ret();
  
-@@ -2487,6 +2547,7 @@ void Builtins::Generate_FunctionPrototypeApply(MacroAssembler* masm) {
+@@ -2487,6 +2551,7 @@ void Builtins::Generate_FunctionPrototypeApply(MacroAssembler* masm) {
      __ Peek(arg_array, 2 * kSystemPointerSize);
      __ bind(&done);
    }
@@ -98,7 +102,7 @@ index f7c9c32e61d..a7f0769da32 100644
    __ DropArguments(argc);
    __ PushArgument(this_arg);
  
-@@ -2526,11 +2587,38 @@ void Builtins::Generate_FunctionPrototypeApply(MacroAssembler* masm) {
+@@ -2526,11 +2591,38 @@ void Builtins::Generate_FunctionPrototypeApply(MacroAssembler* masm) {
  void Builtins::Generate_FunctionPrototypeCall(MacroAssembler* masm) {
    Register argc = x0;
    Register function = x1;
@@ -137,7 +141,7 @@ index f7c9c32e61d..a7f0769da32 100644
  
    // 2. Handle case with no arguments.
    {
-@@ -2632,6 +2720,8 @@ void Builtins::Generate_ReflectApply(MacroAssembler* masm) {
+@@ -2632,6 +2724,8 @@ void Builtins::Generate_ReflectApply(MacroAssembler* masm) {
      __ Peek(arguments_list, 3 * kSystemPointerSize);
      __ bind(&done);
    }
@@ -146,7 +150,7 @@ index f7c9c32e61d..a7f0769da32 100644
    __ DropArguments(argc);
    __ PushArgument(this_argument);
  
-@@ -2665,6 +2755,7 @@ void Builtins::Generate_ReflectConstruct(MacroAssembler* masm) {
+@@ -2665,6 +2759,7 @@ void Builtins::Generate_ReflectConstruct(MacroAssembler* masm) {
    Register target = x1;
    Register new_target = x3;
    Register undefined_value = x4;
@@ -154,7 +158,7 @@ index f7c9c32e61d..a7f0769da32 100644
  
    __ LoadRoot(undefined_value, RootIndex::kUndefinedValue);
  
-@@ -2689,6 +2780,11 @@ void Builtins::Generate_ReflectConstruct(MacroAssembler* masm) {
+@@ -2689,6 +2784,11 @@ void Builtins::Generate_ReflectConstruct(MacroAssembler* masm) {
      __ bind(&done);
    }
  
@@ -3086,7 +3090,7 @@ index 6f4d6169899..224a98a9fb9 100644
    // Collect the stack trace and install the stack accessors.
    RETURN_FAILURE_ON_EXCEPTION(
 diff --git a/src/builtins/builtins-function.cc b/src/builtins/builtins-function.cc
-index b511c42836f..e7dc89249b0 100644
+index b511c42836f..390dc98438d 100644
 --- a/src/builtins/builtins-function.cc
 +++ b/src/builtins/builtins-function.cc
 @@ -2,6 +2,10 @@
@@ -3100,12 +3104,12 @@ index b511c42836f..e7dc89249b0 100644
  #include "src/builtins/builtins-utils-inl.h"
  #include "src/builtins/builtins.h"
  #include "src/codegen/code-factory.h"
-@@ -18,6 +22,67 @@ namespace v8 {
+@@ -18,6 +22,71 @@ namespace v8 {
  namespace internal {
  
  namespace {
 +void LogXTraceDynamicCode(Isolate* isolate, DirectHandle<String> source,
-+                          const char* api) {
++                          const char* api, int script_id) {
 +  if (isolate->serializer_enabled()) return;
 +
 +  constexpr uint32_t kXTraceEmbedderDataSlot = 3;
@@ -3119,6 +3123,10 @@ index b511c42836f..e7dc89249b0 100644
 +  std::unique_ptr<char[]> source_text = source->ToCString();
 +  std::string event = "xtrace:dynamic-code:";
 +  event.append(api);
++  event.push_back(':');
++  event.append(std::to_string(isolate->id()));
++  event.push_back(':');
++  event.append(std::to_string(script_id));
 +  event.push_back(':');
 +  event.append(source_text.get());
 +  isolate->event_logger()(event.c_str(), v8::LogEventStatus::kLog);
@@ -3168,15 +3176,29 @@ index b511c42836f..e7dc89249b0 100644
  
  // ES6 section 19.2.1.1.1 CreateDynamicFunction
  MaybeDirectHandle<Object> CreateDynamicFunction(Isolate* isolate,
-@@ -81,6 +146,7 @@ MaybeDirectHandle<Object> CreateDynamicFunction(Isolate* isolate,
- 
-   // Compile the string in the constructor and not a helper so that errors to
+@@ -83,12 +152,18 @@ MaybeDirectHandle<Object> CreateDynamicFunction(Isolate* isolate,
    // come from here.
-+  LogXTraceDynamicCode(isolate, source, "Function");
    DirectHandle<JSFunction> function;
    {
+-    ASSIGN_RETURN_ON_EXCEPTION(
+-        isolate, function,
++    MaybeDirectHandle<JSFunction> maybe_function =
+         Compiler::GetFunctionFromString(
+             isolate, direct_handle(target->native_context(), isolate),
+             indirect_handle(source, isolate), parameters_end_pos,
+-            is_code_like));
++            is_code_like);
++    if (!maybe_function.ToHandle(&function)) {
++      LogXTraceDynamicCode(isolate, source, "Function", -1);
++      return MaybeDirectHandle<Object>();
++    }
++    Tagged<Object> script = function->shared()->script();
++    LogXTraceDynamicCode(isolate, source, "Function",
++                         IsScript(script) ? Cast<Script>(script)->id() : -1);
+     DirectHandle<Object> result;
      ASSIGN_RETURN_ON_EXCEPTION(
-@@ -250,16 +316,25 @@ BUILTIN(FunctionPrototypeToString) {
+         isolate, result,
+@@ -250,16 +325,25 @@ BUILTIN(FunctionPrototypeToString) {
    HandleScope scope(isolate);
    DirectHandle<Object> receiver = args.receiver();
    if (IsJSBoundFunction(*receiver)) {
@@ -3342,7 +3364,7 @@ index acb2951e161..06b85a8a30f 100644
  }
  
 diff --git a/src/builtins/builtins-global.cc b/src/builtins/builtins-global.cc
-index 89be05c0b3e..21c3a7bcdad 100644
+index 89be05c0b3e..09e55be4b52 100644
 --- a/src/builtins/builtins-global.cc
 +++ b/src/builtins/builtins-global.cc
 @@ -2,6 +2,10 @@
@@ -3356,7 +3378,7 @@ index 89be05c0b3e..21c3a7bcdad 100644
  #include "src/builtins/builtins-utils-inl.h"
  #include "src/builtins/builtins.h"
  #include "src/codegen/code-factory.h"
-@@ -13,6 +17,115 @@
+@@ -13,6 +17,119 @@
  namespace v8 {
  namespace internal {
  
@@ -3457,12 +3479,16 @@ index 89be05c0b3e..21c3a7bcdad 100644
 +}
 +
 +void LogXTraceDynamicCode(Isolate* isolate, DirectHandle<String> source,
-+                          const char* api) {
++                          const char* api, int script_id) {
 +  if (!XTraceRuntimeLoggingEnabled(isolate)) return;
 +
 +  std::unique_ptr<char[]> source_text = source->ToCString();
 +  std::string event = "xtrace:dynamic-code:";
 +  event.append(api);
++  event.push_back(':');
++  event.append(std::to_string(isolate->id()));
++  event.push_back(':');
++  event.append(std::to_string(script_id));
 +  event.push_back(':');
 +  event.append(source_text.get());
 +  isolate->event_logger()(event.c_str(), v8::LogEventStatus::kLog);
@@ -3472,7 +3498,7 @@ index 89be05c0b3e..21c3a7bcdad 100644
  // ES6 section 18.2.6.2 decodeURI (encodedURI)
  BUILTIN(GlobalDecodeURI) {
    HandleScope scope(isolate);
-@@ -21,7 +134,13 @@ BUILTIN(GlobalDecodeURI) {
+@@ -21,7 +138,13 @@ BUILTIN(GlobalDecodeURI) {
        isolate, encoded_uri,
        Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
  
@@ -3487,7 +3513,7 @@ index 89be05c0b3e..21c3a7bcdad 100644
  }
  
  // ES6 section 18.2.6.3 decodeURIComponent (encodedURIComponent)
-@@ -32,8 +151,14 @@ BUILTIN(GlobalDecodeURIComponent) {
+@@ -32,8 +155,14 @@ BUILTIN(GlobalDecodeURIComponent) {
        isolate, encoded_uri_component,
        Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
  
@@ -3504,7 +3530,7 @@ index 89be05c0b3e..21c3a7bcdad 100644
  }
  
  // ES6 section 18.2.6.4 encodeURI (uri)
-@@ -43,7 +168,12 @@ BUILTIN(GlobalEncodeURI) {
+@@ -43,7 +172,12 @@ BUILTIN(GlobalEncodeURI) {
    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
        isolate, uri, Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
  
@@ -3518,7 +3544,7 @@ index 89be05c0b3e..21c3a7bcdad 100644
  }
  
  // ES6 section 18.2.6.5 encodeURIComponent (uriComponent)
-@@ -54,8 +184,14 @@ BUILTIN(GlobalEncodeURIComponent) {
+@@ -54,8 +188,14 @@ BUILTIN(GlobalEncodeURIComponent) {
        isolate, uri_component,
        Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
  
@@ -3535,16 +3561,33 @@ index 89be05c0b3e..21c3a7bcdad 100644
  }
  
  // ES6 section B.2.1.1 escape (string)
-@@ -100,6 +236,9 @@ BUILTIN(GlobalEval) {
+@@ -100,13 +240,22 @@ BUILTIN(GlobalEval) {
        Compiler::ValidateDynamicCompilationSource(
            isolate, direct_handle(target->native_context(), isolate), x);
    if (unhandled_object) return *x;
-+  if (!source.is_null()) {
-+    LogXTraceDynamicCode(isolate, source.ToHandleChecked(), "eval");
-+  }
- 
+-
    DirectHandle<JSFunction> function;
-   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+-      isolate, function,
++  MaybeDirectHandle<JSFunction> maybe_function =
+       Compiler::GetFunctionFromValidatedString(
+           isolate, direct_handle(target->native_context(), isolate), source,
+-          NO_PARSE_RESTRICTION, kNoSourcePosition));
++          NO_PARSE_RESTRICTION, kNoSourcePosition);
++  if (!maybe_function.ToHandle(&function)) {
++    if (!source.is_null()) {
++      LogXTraceDynamicCode(isolate, source.ToHandleChecked(), "eval", -1);
++    }
++    return ReadOnlyRoots(isolate).exception();
++  }
++  if (!source.is_null()) {
++    Tagged<Object> script = function->shared()->script();
++    LogXTraceDynamicCode(isolate, source.ToHandleChecked(), "eval",
++                         IsScript(script) ? Cast<Script>(script)->id() : -1);
++  }
+   RETURN_RESULT_OR_FAILURE(
+       isolate, Execution::Call(isolate, function, target_global_proxy, {}));
+ }
 diff --git a/src/builtins/builtins-intl-gen.cc b/src/builtins/builtins-intl-gen.cc
 index c30c582c8f0..f8fbba9b9ad 100644
 --- a/src/builtins/builtins-intl-gen.cc
@@ -3727,7 +3770,7 @@ index bbfdb2c5505..3039d39030b 100644
        args, isolate, v8::Isolate::UseCounterFeature::kDateTimeFormat,
        isolate->intl_date_time_format_function(), "Intl.DateTimeFormat");
 diff --git a/src/builtins/builtins-json.cc b/src/builtins/builtins-json.cc
-index 1ed282fb9bf..72d34f9a686 100644
+index 1ed282fb9bf..edd4112f263 100644
 --- a/src/builtins/builtins-json.cc
 +++ b/src/builtins/builtins-json.cc
 @@ -2,6 +2,11 @@
@@ -3949,7 +3992,7 @@ index 1ed282fb9bf..72d34f9a686 100644
 +  bool has_field = false;
 +  std::string args = "[{";
 +  AppendXTraceJsonTypeField(args, &has_field, "input_type", object);
-+  AppendXTraceJsonValueRefField(isolate, args, &has_field, "input_ref", object);
++  AppendXTraceMaybeStringField(isolate, args, &has_field, "input", object);
 +  AppendXTraceJsonTypeField(args, &has_field, "replacer_type", replacer);
 +  AppendXTraceJsonValueRefField(isolate, args, &has_field, "replacer_ref", replacer);
 +  AppendXTraceJsonTypeField(args, &has_field, "space_type", indent);
@@ -9779,7 +9822,7 @@ index 0563f0d73a2..1848e3fa442 100644
  }
  
 diff --git a/src/runtime/runtime-compiler.cc b/src/runtime/runtime-compiler.cc
-index 30bf249547c..44aa0660188 100644
+index 30bf249547c..db128f0ef1e 100644
 --- a/src/runtime/runtime-compiler.cc
 +++ b/src/runtime/runtime-compiler.cc
 @@ -2,7 +2,10 @@
@@ -9793,12 +9836,12 @@ index 30bf249547c..44aa0660188 100644
  
  #include "src/asmjs/asm-js.h"
  #include "src/codegen/assembler-inl.h"
-@@ -27,6 +30,26 @@
+@@ -27,6 +30,30 @@
  namespace v8::internal {
  
  namespace {
 +void LogXTraceDynamicCode(Isolate* isolate, DirectHandle<String> source,
-+                          const char* api) {
++                          const char* api, int script_id) {
 +  if (isolate->serializer_enabled()) return;
 +
 +  constexpr uint32_t kXTraceEmbedderDataSlot = 3;
@@ -9813,6 +9856,10 @@ index 30bf249547c..44aa0660188 100644
 +  std::string event = "xtrace:dynamic-code:";
 +  event.append(api);
 +  event.push_back(':');
++  event.append(std::to_string(isolate->id()));
++  event.push_back(':');
++  event.append(std::to_string(script_id));
++  event.push_back(':');
 +  event.append(source_text.get());
 +  isolate->event_logger()(event.c_str(), v8::LogEventStatus::kLog);
 +}
@@ -9820,14 +9867,37 @@ index 30bf249547c..44aa0660188 100644
  void LogExecution(Isolate* isolate, DirectHandle<JSFunction> function) {
    DCHECK(v8_flags.log_function_events);
    if (!function->has_feedback_vector()) return;
-@@ -829,6 +852,7 @@ static Tagged<Object> CompileGlobalEval(
+@@ -829,7 +856,6 @@ static Tagged<Object> CompileGlobalEval(
      if (maybe_error.ToHandle(&error)) isolate->Throw(*error);
      return ReadOnlyRoots(isolate).exception();
    }
-+  LogXTraceDynamicCode(isolate, source.ToHandleChecked(), "eval");
- 
+-
    // Deal with a normal eval call with a string argument. Compile it
    // and return the compiled function bound in the local context.
+   static const ParseRestriction restriction = NO_PARSE_RESTRICTION;
+@@ -842,12 +868,16 @@ static Tagged<Object> CompileGlobalEval(
+               .GetHeapObjectIfWeak(isolate, &stored_info));
+     CHECK_EQ(stored_info, context->scope_info());
+   }
+-  ASSIGN_RETURN_ON_EXCEPTION_VALUE(
+-      isolate, compiled,
+-      Compiler::GetFunctionFromEval(
+-          isolate, source.ToHandleChecked(), outer_info, context, language_mode,
+-          restriction, kNoSourcePosition, eval_position),
+-      ReadOnlyRoots(isolate).exception());
++  MaybeDirectHandle<JSFunction> maybe_compiled = Compiler::GetFunctionFromEval(
++      isolate, source.ToHandleChecked(), outer_info, context, language_mode,
++      restriction, kNoSourcePosition, eval_position);
++  if (!maybe_compiled.ToHandle(&compiled)) {
++    LogXTraceDynamicCode(isolate, source.ToHandleChecked(), "eval", -1);
++    return ReadOnlyRoots(isolate).exception();
++  }
++  Tagged<Object> script = compiled->shared()->script();
++  LogXTraceDynamicCode(isolate, source.ToHandleChecked(), "eval",
++                       IsScript(script) ? Cast<Script>(script)->id() : -1);
+   return *compiled;
+ }
+ 
 diff --git a/src/runtime/runtime-debug.cc b/src/runtime/runtime-debug.cc
 index 3e90a73ff93..db44f8feb65 100644
 --- a/src/runtime/runtime-debug.cc
@@ -10068,10 +10138,10 @@ index 86fafdb8698..484c9eb9c55 100644
  }
  
 diff --git a/src/runtime/runtime-typedarray.cc b/src/runtime/runtime-typedarray.cc
-index 2725e04bc75..85480861a6b 100644
+index 2725e04bc75..f89c03b857c 100644
 --- a/src/runtime/runtime-typedarray.cc
 +++ b/src/runtime/runtime-typedarray.cc
-@@ -2,13 +2,28 @@
+@@ -2,13 +2,31 @@
  // Use of this source code is governed by a BSD-style license that can be
  // found in the LICENSE file.
  
@@ -10082,7 +10152,9 @@ index 2725e04bc75..85480861a6b 100644
 +#include <memory>
 +#include <optional>
 +#include <string>
++#include <string_view>
 +#include <type_traits>
++#include <vector>
 +
  #include "src/base/atomicops.h"
  #include "src/common/message-template.h"
@@ -10097,10 +10169,11 @@ index 2725e04bc75..85480861a6b 100644
 +#include "src/objects/js-generator-inl.h"
  #include "src/objects/objects-inl.h"
 +#include "src/objects/script-inl.h"
++#include "src/objects/shared-function-info.h"
  #include "src/runtime/runtime-utils.h"
  #include "src/runtime/runtime.h"
  #include "third_party/fp16/src/include/fp16.h"
-@@ -16,6 +31,2754 @@
+@@ -16,6 +34,2789 @@
  namespace v8 {
  namespace internal {
  
@@ -10124,7 +10197,7 @@ index 2725e04bc75..85480861a6b 100644
 +};
 +
 +struct XTracePendingDispatchSource {
-+  bool has_value = false;
++  uint64_t dispatch_id = 0;
 +  std::string handler_return_ref;
 +  std::string register_ref;
 +};
@@ -10133,17 +10206,29 @@ index 2725e04bc75..85480861a6b 100644
 +    new std::array<XTraceValueSource, kXTraceValueSourceSlotCount>();
 +thread_local size_t xtrace_value_source_next = 0;
 +thread_local auto* xtrace_pending_dispatch_sources =
-+    new std::array<XTracePendingDispatchSource, 5>();
++    new std::array<std::vector<XTracePendingDispatchSource>, 5>();
++thread_local uint64_t xtrace_dispatch_next_id = 0;
 +
 +void AppendFieldPrefix(std::string& args, bool* has_field, const char* name) {
-+  if (*has_field) args.push_back(',');
++  // Prefer has_field tracking, but recover when a prior writer left the buffer
++  // mid-object without flipping has_field (observed as ...:length:N""result").
++  if (!args.empty()) {
++    const char last = args.back();
++    const bool needs_comma =
++        (*has_field && last != ',') ||
++        (!*has_field && last != '{' && last != '[' && last != ',');
++    if (needs_comma) {
++      args.push_back(',');
++    }
++  }
 +  args.push_back('"');
 +  args.append(name);
 +  args.append("\":");
 +  *has_field = true;
 +}
 +
-+std::string QuoteJson(const std::string& value) {
++
++std::string QuoteJson(std::string_view value) {
 +  std::string quoted = "\"";
 +  for (char c : value) {
 +    switch (c) {
@@ -10174,8 +10259,10 @@ index 2725e04bc75..85480861a6b 100644
 +  return quoted;
 +}
 +
-+void AppendStringResultJson(std::string& args, DirectHandle<Object> value) {
-+  args.append("\"result\":");
++void AppendStringResultJson(std::string& args,
++                            bool* has_field,
++                            DirectHandle<Object> value) {
++  AppendFieldPrefix(args, has_field, "result");
 +  if (!IsString(*value)) {
 +    args.append(JsonValue(value));
 +    args.append(",\"result_length\":null");
@@ -10615,24 +10702,22 @@ index 2725e04bc75..85480861a6b 100644
 +
 +void XTraceRememberPendingDispatchSource(
 +    int code,
++    uint64_t dispatch_id,
 +    const std::string& handler_return_ref,
 +    const std::string& register_ref) {
-+  if (code < 1 || code > 4 || handler_return_ref.empty()) return;
-+  XTracePendingDispatchSource& pending =
-+      (*xtrace_pending_dispatch_sources)[static_cast<size_t>(code)];
-+  pending.has_value = true;
-+  pending.handler_return_ref = handler_return_ref;
-+  pending.register_ref = register_ref;
++  if (code != 4 || dispatch_id == 0 || handler_return_ref.empty()) return;
++  (*xtrace_pending_dispatch_sources)[static_cast<size_t>(code)].push_back(
++      {dispatch_id, handler_return_ref, register_ref});
 +}
 +
 +bool XTraceTakePendingDispatchSource(int code,
 +                                     XTracePendingDispatchSource* output) {
 +  if (code < 1 || code > 4) return false;
-+  XTracePendingDispatchSource& pending =
++  std::vector<XTracePendingDispatchSource>& pending =
 +      (*xtrace_pending_dispatch_sources)[static_cast<size_t>(code)];
-+  if (!pending.has_value) return false;
-+  *output = pending;
-+  pending = XTracePendingDispatchSource();
++  if (pending.empty()) return false;
++  *output = std::move(pending.back());
++  pending.pop_back();
 +  return true;
 +}
 +
@@ -10679,8 +10764,10 @@ index 2725e04bc75..85480861a6b 100644
 +    args.append("null");
 +    return;
 +  }
-+  DirectHandle<String> name =
-+      JSFunction::GetDebugName(isolate, Cast<JSFunction>(value));
++  Tagged<SharedFunctionInfo> shared = Cast<JSFunction>(*value)->shared();
++  Tagged<String> raw_name = shared->Name();
++  if (raw_name->length() == 0) raw_name = shared->inferred_name();
++  DirectHandle<String> name(raw_name, isolate);
 +  std::unique_ptr<char[]> name_text = name->ToCString();
 +  args.append(QuoteJson(name_text.get()));
 +}
@@ -10788,6 +10875,10 @@ index 2725e04bc75..85480861a6b 100644
 +  const std::string target_ref = XTraceCompactRef(isolate, target);
 +  const std::string register_source_ref =
 +      XTraceCompactRef(isolate, register_source);
++  AppendStringRefJson(args, has_field, "state_ref", state_ref);
++  AppendStringRefJson(args, has_field, "target_ref", target_ref);
++  AppendStringRefJson(args, has_field, "register_source_ref",
++                      register_source_ref);
 +  AppendStringRefJson(args, has_field, "register_ref",
 +                      "register:" + state_ref + "/" + register_source_ref);
 +  if (XTraceIsTrackableValueRef(XTraceValueRef(isolate, register_source))) {
@@ -11234,7 +11325,7 @@ index 2725e04bc75..85480861a6b 100644
 +void AppendSubjectLinkingJson(Isolate* isolate,
 +                              std::string& args,
 +                              bool* has_field,
-+                              const std::string& shape,
++                              std::string_view shape,
 +                              DirectHandle<Object> subject) {
 +  if (shape == "data_view_get" || shape == "data_view_set" ||
 +      shape == "data_view_get_uint32" || shape == "data_view_set_uint32") {
@@ -11293,6 +11384,8 @@ index 2725e04bc75..85480861a6b 100644
 +    } else {
 +      AppendObjectIdJson(isolate, args, has_field, "sequence_id", subject);
 +    }
++    AppendStringMaterialJson(args, has_field, "sequence", subject);
++    AppendStringLengthJson(args, has_field, "sequence_length", subject);
 +    AppendValueRefJson(isolate, args, has_field, "sequence_ref", subject);
 +  } else if (shape == "sequence_iterator_next_entry" ||
 +             shape == "sequence_iterator_next_done") {
@@ -11357,7 +11450,7 @@ index 2725e04bc75..85480861a6b 100644
 +  }
 +}
 +
-+std::string BuildXTraceVmpArgsJson(DirectHandle<String> shape,
++std::string BuildXTraceVmpArgsJson(std::string_view shape_string,
 +                                   Isolate* isolate,
 +                                   DirectHandle<Object> subject,
 +                                   DirectHandle<Object> value1,
@@ -11365,14 +11458,22 @@ index 2725e04bc75..85480861a6b 100644
 +                                   DirectHandle<Object> value3,
 +                                   DirectHandle<Object> value4,
 +                                   XTraceVmpProvenanceMode provenance_mode =
-+                                       XTraceVmpProvenanceMode::kFullStack) {
-+  std::unique_ptr<char[]> shape_text = shape->ToCString();
++                                       XTraceVmpProvenanceMode::kFullStack,
++                                   std::optional<int> dispatch_code =
++                                       std::nullopt,
++                                   std::optional<uint64_t> dispatch_id =
++                                       std::nullopt) {
 +  std::string args = "[{";
-+  const std::string shape_string = shape_text.get();
 +  bool has_field = false;
++  AppendFieldPrefix(args, &has_field, "isolate_id");
++  args.append(std::to_string(isolate->id()));
 +  AppendSubjectLinkingJson(isolate, args, &has_field, shape_string, subject);
 +  if (provenance_mode == XTraceVmpProvenanceMode::kDispatchLight) {
 +    AppendXTraceVmpDispatchLightProvenanceJson(isolate, args, &has_field);
++    if (dispatch_id.has_value()) {
++      AppendFieldPrefix(args, &has_field, "dispatch_id");
++      args.append(std::to_string(dispatch_id.value()));
++    }
 +  } else {
 +    AppendXTraceVmpCallsiteJson(isolate, args, &has_field);
 +    AppendXTraceVmpStackJson(isolate, args, &has_field);
@@ -11442,8 +11543,7 @@ index 2725e04bc75..85480861a6b 100644
 +      AppendFieldPrefix(args, &has_field, "resolved_index");
 +      args.append(JsonValue(value3));
 +    }
-+    args.append(",");
-+    AppendStringResultJson(args, value2);
++    AppendStringResultJson(args, &has_field, value2);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value2);
 +  } else if (shape_string == "string_concat") {
 +    AppendStringMaterialJson(args, &has_field, "subject", subject);
@@ -11455,8 +11555,7 @@ index 2725e04bc75..85480861a6b 100644
 +    AppendStringMaterialJson(args, &has_field, "first_arg", value2);
 +    AppendStringLengthJson(args, &has_field, "first_arg_length", value2);
 +    AppendValueRefJson(isolate, args, &has_field, "first_arg_ref", value2);
-+    args.append(",");
-+    AppendStringResultJson(args, value3);
++    AppendStringResultJson(args, &has_field, value3);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value3);
 +  } else if (shape_string == "string_slice") {
 +    AppendStringMaterialJson(args, &has_field, "subject", subject);
@@ -11466,8 +11565,7 @@ index 2725e04bc75..85480861a6b 100644
 +    args.append(JsonValue(value1));
 +    args.append(",\"end\":");
 +    args.append(JsonValue(value2));
-+    args.append(",");
-+    AppendStringResultJson(args, value3);
++    AppendStringResultJson(args, &has_field, value3);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value3);
 +  } else if (shape_string == "string_substr") {
 +    AppendStringMaterialJson(args, &has_field, "subject", subject);
@@ -11477,8 +11575,7 @@ index 2725e04bc75..85480861a6b 100644
 +    args.append(JsonValue(value1));
 +    args.append(",\"length\":");
 +    args.append(JsonValue(value2));
-+    args.append(",");
-+    AppendStringResultJson(args, value3);
++    AppendStringResultJson(args, &has_field, value3);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value3);
 +  } else if (shape_string == "string_pad") {
 +    AppendStringMaterialJson(args, &has_field, "subject", subject);
@@ -11490,8 +11587,7 @@ index 2725e04bc75..85480861a6b 100644
 +    AppendStringMaterialJson(args, &has_field, "fill", value2);
 +    AppendStringLengthJson(args, &has_field, "fill_length", value2);
 +    AppendValueRefJson(isolate, args, &has_field, "fill_ref", value2);
-+    args.append(",");
-+    AppendStringResultJson(args, value3);
++    AppendStringResultJson(args, &has_field, value3);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value3);
 +  } else if (shape_string == "string_repeat") {
 +    AppendStringMaterialJson(args, &has_field, "subject", subject);
@@ -11500,8 +11596,7 @@ index 2725e04bc75..85480861a6b 100644
 +    AppendFieldPrefix(args, &has_field, "repeat_count");
 +    args.append(JsonValue(value1));
 +    AppendValueRefJson(isolate, args, &has_field, "repeat_count_ref", value1);
-+    args.append(",");
-+    AppendStringResultJson(args, value2);
++    AppendStringResultJson(args, &has_field, value2);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value2);
 +  } else if (shape_string == "string_search") {
 +    AppendStringMaterialJson(args, &has_field, "subject", subject);
@@ -11566,8 +11661,7 @@ index 2725e04bc75..85480861a6b 100644
 +    AppendValueRefJson(isolate, args, &has_field, "subject_ref", subject);
 +    AppendFieldPrefix(args, &has_field, "trim_mode");
 +    args.append(JsonValue(value1));
-+    args.append(",");
-+    AppendStringResultJson(args, value2);
++    AppendStringResultJson(args, &has_field, value2);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value2);
 +  } else if (shape_string == "string_replace" ||
 +             shape_string == "string_replace_all") {
@@ -11581,8 +11675,7 @@ index 2725e04bc75..85480861a6b 100644
 +    AppendStringMaterialJson(args, &has_field, "replace", value2);
 +    AppendStringLengthJson(args, &has_field, "replace_length", value2);
 +    AppendValueRefJson(isolate, args, &has_field, "replace_ref", value2);
-+    args.append(",");
-+    AppendStringResultJson(args, value3);
++    AppendStringResultJson(args, &has_field, value3);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value3);
 +  } else if (shape_string == "string_split") {
 +    AppendStringMaterialJson(args, &has_field, "subject", subject);
@@ -11612,8 +11705,7 @@ index 2725e04bc75..85480861a6b 100644
 +    AppendValueRefJson(isolate, args, &has_field, "subject_ref", subject);
 +    AppendFieldPrefix(args, &has_field, "case_direction");
 +    args.append(JsonValue(value1));
-+    args.append(",");
-+    AppendStringResultJson(args, value2);
++    AppendStringResultJson(args, &has_field, value2);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value2);
 +  } else if (shape_string == "string_from_code") {
 +    AppendFieldPrefix(args, &has_field, "argc");
@@ -11621,8 +11713,7 @@ index 2725e04bc75..85480861a6b 100644
 +    args.append(",\"first_code\":");
 +    args.append(JsonValue(value2));
 +    AppendValueRefJson(isolate, args, &has_field, "first_code_ref", value2);
-+    args.append(",");
-+    AppendStringResultJson(args, value3);
++    AppendStringResultJson(args, &has_field, value3);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value3);
 +  } else if (shape_string == "sequence_at") {
 +    AppendFieldPrefix(args, &has_field, "index");
@@ -11926,6 +12017,8 @@ index 2725e04bc75..85480861a6b 100644
 +    }
 +  } else if (shape_string == "sequence_set") {
 +    AppendObjectTypeJson(args, &has_field, "source_type", value1);
++    AppendStringMaterialJson(args, &has_field, "source", value1);
++    AppendStringLengthJson(args, &has_field, "source_string_length", value1);
 +    AppendValueRefJson(isolate, args, &has_field, "source_ref", value1);
 +    AppendObjectIdJson(isolate, args, &has_field, "source_typed_array_id",
 +                       value1);
@@ -11957,8 +12050,7 @@ index 2725e04bc75..85480861a6b 100644
 +    } else {
 +      args.append("null");
 +    }
-+    args.append(",");
-+    AppendStringResultJson(args, value3);
++    AppendStringResultJson(args, &has_field, value3);
 +  } else if (shape_string == "array_push") {
 +    AppendFieldPrefix(args, &has_field, "argc");
 +    args.append(JsonValue(value1));
@@ -11971,6 +12063,7 @@ index 2725e04bc75..85480861a6b 100644
 +    args.append(JsonValue(value1));
 +    AppendFieldPrefix(args, &has_field, "length_after");
 +    args.append(JsonValue(value2));
++    AppendStringResultJson(args, &has_field, value3);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value3);
 +  } else if (shape_string == "array_unshift") {
 +    AppendFieldPrefix(args, &has_field, "length_before");
@@ -11983,6 +12076,7 @@ index 2725e04bc75..85480861a6b 100644
 +    args.append(JsonValue(value1));
 +    AppendFieldPrefix(args, &has_field, "length_after");
 +    args.append(JsonValue(value2));
++    AppendStringResultJson(args, &has_field, value3);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value3);
 +  } else if (shape_string == "array_splice") {
 +    AppendFieldPrefix(args, &has_field, "length_before");
@@ -12085,12 +12179,17 @@ index 2725e04bc75..85480861a6b 100644
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value2);
 +  } else if (shape_string == "object_to_string") {
 +    AppendObjectTypeJson(args, &has_field, "receiver_type", subject);
++    AppendStringMaterialJson(args, &has_field, "receiver", subject);
++    AppendStringLengthJson(args, &has_field, "receiver_length", subject);
 +    AppendValueRefJson(isolate, args, &has_field, "receiver_ref", subject);
 +    AppendObjectIdJson(isolate, args, &has_field, "receiver_id", subject);
 +    AppendObjectTypeJson(args, &has_field, "result_type", value2);
++    AppendStringResultJson(args, &has_field, value2);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value2);
 +  } else if (shape_string == "array_is_array") {
 +    AppendObjectTypeJson(args, &has_field, "input_type", subject);
++    AppendStringMaterialJson(args, &has_field, "input", subject);
++    AppendStringLengthJson(args, &has_field, "input_length", subject);
 +    AppendValueRefJson(isolate, args, &has_field, "input_ref", subject);
 +    AppendObjectIdJson(isolate, args, &has_field, "input_id", subject);
 +    AppendObjectTypeJson(args, &has_field, "result_type", value2);
@@ -12327,7 +12426,7 @@ index 2725e04bc75..85480861a6b 100644
 +    AppendStringMaterialJson(args, &has_field, "replace", value2);
 +    AppendStringLengthJson(args, &has_field, "replace_length", value2);
 +    AppendValueRefJson(isolate, args, &has_field, "replace_ref", value2);
-+    AppendStringResultJson(args, value3);
++    AppendStringResultJson(args, &has_field, value3);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value3);
 +  } else if (shape_string == "regexp_split") {
 +    AppendStringMaterialJson(args, &has_field, "input", value1);
@@ -12436,6 +12535,7 @@ index 2725e04bc75..85480861a6b 100644
 +    AppendObjectTypeJson(args, &has_field, "result_type", value1);
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value1);
 +  } else if (shape_string == "dynamic_dispatch") {
++    AppendStringRefJson(args, &has_field, "result_capture", "entry_only");
 +    AppendFunctionNameJson(isolate, args, &has_field, subject);
 +    AppendObjectTypeJson(args, &has_field, "target_type", subject);
 +    AppendObjectTypeJson(args, &has_field, "this_type", value1);
@@ -12450,6 +12550,8 @@ index 2725e04bc75..85480861a6b 100644
 +    AppendDynamicDispatchVmpRefsJson(isolate, args, &has_field, subject,
 +                                     value1, value2, value3, value4);
 +  } else if (shape_string == "construct_dispatch") {
++    AppendStringRefJson(args, &has_field, "result_capture",
++                        "entry_and_result");
 +    AppendFunctionNameJson(isolate, args, &has_field, subject);
 +    AppendObjectTypeJson(args, &has_field, "target_type", subject);
 +    AppendValueRefJson(isolate, args, &has_field, "target_ref", subject);
@@ -12504,8 +12606,14 @@ index 2725e04bc75..85480861a6b 100644
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value2);
 +    AppendObjectIdJson(isolate, args, &has_field, "result_id", value2);
 +  } else if (shape_string == "dynamic_dispatch_result") {
++    AppendStringRefJson(args, &has_field, "result_capture",
++                        "entry_and_result");
 +    AppendFieldPrefix(args, &has_field, "dispatch_code");
-+    args.append(JsonValue(value1));
++    if (dispatch_code.has_value()) {
++      args.append(std::to_string(dispatch_code.value()));
++    } else {
++      args.append(JsonValue(value1));
++    }
 +    AppendValueRefJson(isolate, args, &has_field, "result_ref", value3);
 +    AppendBitwiseSourceRefJson(isolate, args, &has_field, "result", value3);
 +    AppendObjectTypeJson(args, &has_field, "result_type", value3);
@@ -12855,7 +12963,7 @@ index 2725e04bc75..85480861a6b 100644
  RUNTIME_FUNCTION(Runtime_ArrayBufferDetach) {
    HandleScope scope(isolate);
    // This runtime function is exposed in ClusterFuzz and as such has to
-@@ -66,6 +2829,104 @@ RUNTIME_FUNCTION(Runtime_TypedArrayGetBuffer) {
+@@ -66,6 +2867,108 @@ RUNTIME_FUNCTION(Runtime_TypedArrayGetBuffer) {
    return *holder->GetBuffer(isolate);
  }
  
@@ -12870,10 +12978,11 @@ index 2725e04bc75..85480861a6b 100644
 +  DirectHandle<Object> value3 = args.at(5);
 +  DirectHandle<Object> undefined_value =
 +      isolate->factory()->undefined_value();
++  std::unique_ptr<char[]> shape_text = shape->ToCString();
 +  LogXTraceVmpRuntime(
 +      isolate, api,
-+      BuildXTraceVmpArgsJson(shape, isolate, subject, value1, value2, value3,
-+                             undefined_value));
++      BuildXTraceVmpArgsJson(shape_text.get(), isolate, subject, value1, value2,
++                             value3, undefined_value));
 +  return ReadOnlyRoots(isolate).undefined_value();
 +}
 +
@@ -12888,8 +12997,9 @@ index 2725e04bc75..85480861a6b 100644
 +  if (!api) {
 +    return ReadOnlyRoots(isolate).undefined_value();
 +  }
-+  DirectHandle<String> shape = isolate->factory()->NewStringFromAsciiChecked(
-+      code == 4 ? "construct_dispatch" : "dynamic_dispatch");
++  DisallowGarbageCollection no_gc;
++  const std::string_view shape =
++      code == 4 ? "construct_dispatch" : "dynamic_dispatch";
 +  DirectHandle<Object> subject = args.at(1);
 +  DirectHandle<Object> value1 = args.at(2);
 +  DirectHandle<Object> value2 = args.at(3);
@@ -12907,8 +13017,10 @@ index 2725e04bc75..85480861a6b 100644
 +      "handler_arg:" + target_ref + "/" + register_source_ref;
 +  const std::string register_ref =
 +      "register:" + state_ref + "/" + register_source_ref;
++  const uint64_t dispatch_id = ++xtrace_dispatch_next_id;
 +  XTraceRememberPendingDispatchSource(
-+      code, "handler_return:" + target_ref + "/" + register_source_ref,
++      code, dispatch_id,
++      "handler_return:" + target_ref + "/" + register_source_ref,
 +      register_ref);
 +  XTraceRememberValueSource(isolate, register_source, handler_arg_ref,
 +                            register_ref);
@@ -12916,7 +13028,8 @@ index 2725e04bc75..85480861a6b 100644
 +      isolate, api,
 +      BuildXTraceVmpArgsJson(shape, isolate, subject, value1, value2, value3,
 +                             value4,
-+                             XTraceVmpProvenanceMode::kDispatchLight));
++                             XTraceVmpProvenanceMode::kDispatchLight,
++                             std::nullopt, dispatch_id));
 +  return ReadOnlyRoots(isolate).undefined_value();
 +}
 +
@@ -12931,12 +13044,10 @@ index 2725e04bc75..85480861a6b 100644
 +  if (!api) {
 +    return ReadOnlyRoots(isolate).undefined_value();
 +  }
-+  DirectHandle<String> shape =
-+      isolate->factory()->NewStringFromAsciiChecked("dynamic_dispatch_result");
++  DisallowGarbageCollection no_gc;
++  constexpr std::string_view shape = "dynamic_dispatch_result";
 +  DirectHandle<Object> undefined_value =
 +      isolate->factory()->undefined_value();
-+  DirectHandle<Object> dispatch_code_value =
-+      isolate->factory()->NewNumberFromInt(code);
 +  DirectHandle<Object> result = args.at(1);
 +  XTracePendingDispatchSource pending_source;
 +  const bool has_pending_source =
@@ -12951,9 +13062,10 @@ index 2725e04bc75..85480861a6b 100644
 +  LogXTraceVmpRuntimeEvent(
 +      isolate, api,
 +      BuildXTraceVmpArgsJson(shape, isolate, undefined_value,
-+                             dispatch_code_value, undefined_value, result,
++                             undefined_value, undefined_value, result,
 +                             undefined_value,
-+                             XTraceVmpProvenanceMode::kDispatchLight));
++                             XTraceVmpProvenanceMode::kDispatchLight, code,
++                             pending_source.dispatch_id));
 +  return ReadOnlyRoots(isolate).undefined_value();
 +}
 +
@@ -12974,32 +13086,6 @@ index 2d7628dd0f5..40d3ff91dc7 100644
    F(TypedArraySet, 2, 1)                       \
    F(TypedArraySortFast, 1, 1)
  
-diff --git a/third_party/v8/builtins/array-sort.tq b/third_party/v8/builtins/array-sort.tq
-index 90e36b5cd08..053b90671cc 100644
---- a/third_party/v8/builtins/array-sort.tq
-+++ b/third_party/v8/builtins/array-sort.tq
-@@ -1603,12 +1603,20 @@ transitioning javascript builtin ArrayPrototypeSort(
-   // 3. Let len be ? ToLength(? Get(obj, "length")).
-   const len: Number = GetLengthProperty(obj);
- 
--  if (len < 2) return obj;
-+  if (len < 2) {
-+    XTraceVmpRuntime(
-+        context, StringConstant('Array.prototype.sort'),
-+        StringConstant('array_sort'), obj, len, comparefn, obj);
-+    return obj;
-+  }
- 
-   const isToSorted: constexpr bool = false;
-   const sortState: SortState = NewSortState(obj, comparefn, len, isToSorted);
-   ArrayPowerSort(context, sortState);
- 
-+  XTraceVmpRuntime(
-+      context, StringConstant('Array.prototype.sort'),
-+      StringConstant('array_sort'), obj, len, comparefn, obj);
-   return obj;
- }
- }
 diff --git a/src/wasm/wasm-js.cc b/src/wasm/wasm-js.cc
 index cdd3e16a393..09543f3e81c 100644
 --- a/src/wasm/wasm-js.cc
@@ -13118,3 +13204,29 @@ index cdd3e16a393..09543f3e81c 100644
  
    if (!info.IsConstructCall()) {
      thrower.TypeError("WebAssembly.Memory must be invoked with 'new'");
+diff --git a/third_party/v8/builtins/array-sort.tq b/third_party/v8/builtins/array-sort.tq
+index 90e36b5cd08..053b90671cc 100644
+--- a/third_party/v8/builtins/array-sort.tq
++++ b/third_party/v8/builtins/array-sort.tq
+@@ -1603,12 +1603,20 @@ transitioning javascript builtin ArrayPrototypeSort(
+   // 3. Let len be ? ToLength(? Get(obj, "length")).
+   const len: Number = GetLengthProperty(obj);
+ 
+-  if (len < 2) return obj;
++  if (len < 2) {
++    XTraceVmpRuntime(
++        context, StringConstant('Array.prototype.sort'),
++        StringConstant('array_sort'), obj, len, comparefn, obj);
++    return obj;
++  }
+ 
+   const isToSorted: constexpr bool = false;
+   const sortState: SortState = NewSortState(obj, comparefn, len, isToSorted);
+   ArrayPowerSort(context, sortState);
+ 
++  XTraceVmpRuntime(
++      context, StringConstant('Array.prototype.sort'),
++      StringConstant('array_sort'), obj, len, comparefn, obj);
+   return obj;
+ }
+ }

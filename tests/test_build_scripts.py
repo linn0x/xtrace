@@ -2227,7 +2227,7 @@ class BuildScriptTests(unittest.TestCase):
             trim_block,
         )
         self.assertIn(
-            '+    AppendStringResultJson(args, value2);',
+            '+    AppendStringResultJson(args, &has_field, value2);',
             trim_block,
         )
         self.assertIn(
@@ -2253,7 +2253,7 @@ class BuildScriptTests(unittest.TestCase):
             replace_all_block,
         )
         self.assertIn(
-            '+    AppendStringResultJson(args, value3);',
+            '+    AppendStringResultJson(args, &has_field, value3);',
             replace_all_block,
         )
         search_start = v8_patch.index('+  } else if (shape_string == "regexp_search")')
@@ -2306,7 +2306,7 @@ class BuildScriptTests(unittest.TestCase):
             replace_block,
         )
         self.assertIn(
-            '+    AppendStringResultJson(args, value3);',
+            '+    AppendStringResultJson(args, &has_field, value3);',
             replace_block,
         )
         self.assertIn(
