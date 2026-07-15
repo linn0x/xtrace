@@ -726,7 +726,7 @@ test("buildLocalReport matches distant unsigned URL candidates", () => {
       seq: 100,
       category: "reverse",
       api: "URL.constructor",
-      args: [{url: "https://www.example.test/api/list?count=6&device_id=abc&app_id=1988"}],
+      args: [{url: "https://www.example.test/api/list?count=6&device_id=abc&app_id=1000"}],
       stack: [{function: "buildUnsignedUrl", url: assetUrl, line: 10, column: 4}]
     }
   ];
@@ -744,7 +744,7 @@ test("buildLocalReport matches distant unsigned URL candidates", () => {
     category: "reverse",
     api: "Request.constructor",
     args: [{
-      url: "https://www.example.test/api/list?count=6&device_id=abc&app_id=1988&sessionToken=secret-token&X-Signature=secret-signature&X-Secondary-Signature=secret-secondary-signature"
+      url: "https://www.example.test/api/list?count=6&device_id=abc&app_id=1000&sessionToken=secret-token&X-Signature=secret-signature&X-Secondary-Signature=secret-secondary-signature"
     }],
     stack: [{function: "signRequest", url: assetUrl, line: 40, column: 12}]
   });
@@ -5737,7 +5737,7 @@ test("buildLocalReport surfaces business API runtime hints from truncated URL ca
     {function: "decodeUrl", url: sdkUrl, line: 1, column: 12629, asset_id: "sha1:security-runtime"},
     {function: "fetchData", url: appUrl, line: 2, column: 72756, asset_id: "sha1:feed"}
   ];
-  const truncatedBusinessUrl = "https://www.example.test/api/records/list/?client_time=1&app_id=1988&app_name=demo_web&sessionToken=secret-token";
+  const truncatedBusinessUrl = "https://www.example.test/api/records/list/?client_time=1&app_id=1000&app_name=demo_web&sessionToken=secret-token";
   const events = [
     {
       seq: 629407,
@@ -5799,7 +5799,7 @@ test("buildLocalReport surfaces business API runtime hints from truncated URL ca
   assert.deepEqual(hint.source_roles, ["core_signature_asset", "application_caller"]);
   assert.ok(hint.source_stack_urls.includes(sdkUrl));
   assert.ok(hint.source_stack_urls.includes(appUrl));
-  assert.doesNotMatch(JSON.stringify(hint), /<redacted>|client_time=1|app_id=1988/);
+  assert.doesNotMatch(JSON.stringify(hint), /<redacted>|client_time=1|app_id=1000/);
   assert.match(
     renderMarkdownReport(report),
     /business_api_runtime_hint endpoint=https:\/\/www\.example\.test\/api\/records\/list\/ api=decodeURIComponent seq=629407 relevance=business_api_candidate status=truncated_preview query_keys=sessionToken,client_time,app_id,app_name roles=core_signature_asset,application_caller gaps=full_url_value_truncated,query_keys_incomplete next=capture_full_url_value,capture_network_anchor_for_endpoint/
@@ -5809,7 +5809,7 @@ test("buildLocalReport surfaces business API runtime hints from truncated URL ca
 test("buildLocalReport prefers full URI codec values over truncated URL previews", () => {
   const sdkUrl = "https://cdn.example.test/obj/generic_web_runtime/runtime-sdk/1.0.0.374/runtime-sdk.js";
   const stack = [{function: "decodeUrl", url: sdkUrl, line: 1, column: 12629, asset_id: "sha1:runtime-sdk"}];
-  const previewUrl = "https://www.example.test/api/records/list/?client_time=1&app_id=1988&app_name=demo_web";
+  const previewUrl = "https://www.example.test/api/records/list/?client_time=1&app_id=1000&app_name=demo_web";
   const fullUrl = [
     previewUrl,
     "app_language=en",
@@ -14609,7 +14609,7 @@ test("request input bundle links browser headers by network correlation key with
       url: "https://www.example.test/api/feed/list?cursor=1&X-Signature=secret-one",
       network_correlation_key: "sha1:browser-header-link",
       headers: [
-        {name: "Accept-Language", value: "zh-CN,zh;q=0.9", value_length: 14},
+        {name: "Accept-Language", value: "en-US,en;q=0.9", value_length: 14},
         {name: "Cookie", redacted: true, value_length: 64}
       ]
     }],
@@ -16750,21 +16750,21 @@ test("buildAgentInputPack maps records request fields and header sources", () =>
   const endpoint = "https://www.example.test/api/records/list/";
   const scriptUrl = "https://cdn.example.test/obj/generic_web_runtime/example/webapp/main/react-v18/webapp-desktop/feed-prefetch.c2241f3b.js";
   const stack = [{
-    function: "fetchItemList",
+    function: "fetchRecords",
     url: scriptUrl,
     line: 48,
     column: 16,
     asset_id: "sha1:records-source",
     asset_path: "assets/trace_records/feed-prefetch.js"
   }];
-  const signedUrl = `${endpoint}?client_time=1&app_id=1988&app_name=demo_web&browser_language=zh-CN&count=30&device_platform=web_pc&sessionToken=secret-token&X-Signature=secret-one`;
+  const signedUrl = `${endpoint}?client_time=1&app_id=1000&app_name=demo_web&browser_language=en-US&count=30&device_platform=web&sessionToken=secret-token&X-Signature=secret-one`;
   const events = [
     {seq: 1, category: "reverse", phase: "get", api: "Document.cookie.get", args: [{cookie_names: ["sessionToken", "visitor_id"], value: "sessionToken=secret-token; visitor_id=seed-cookie"}], origin: "https://www.example.test", stack},
     {seq: 2, category: "reverse", phase: "call", api: "localStorage.getItem", args: [{key: "web_id", value_length: 19, result_ref: "storage:local:web_id"}], origin: "https://www.example.test", stack},
     {seq: 3, category: "reverse", phase: "call", api: "TextEncoder.encode", args: [{input_ref: "string_ref:records-canonical", result_array_buffer_id: 701}], origin: "https://www.example.test", stack},
     {seq: 4, category: "reverse", phase: "call", api: "DataView.getUint32", args: [{array_buffer_id: 701, data_view_id: 702, byte_offset: 0, little_endian: true, result: 123}], origin: "https://www.example.test", stack},
     {seq: 5, category: "reverse", phase: "call", api: "Math.imul", args: [{x: 123, y: 16777619, result_ref: "number:records-mix"}], origin: "https://www.example.test", stack},
-    {seq: 6, category: "reverse", phase: "call", api: "URL.constructor", args: [{url_object_id: 91, search_params_id: 92, url: `${endpoint}?client_time=1&app_id=1988&app_name=demo_web&browser_language=zh-CN&count=30&device_platform=web_pc&sessionToken=secret-token`}], origin: "https://www.example.test", stack},
+    {seq: 6, category: "reverse", phase: "call", api: "URL.constructor", args: [{url_object_id: 91, search_params_id: 92, url: `${endpoint}?client_time=1&app_id=1000&app_name=demo_web&browser_language=en-US&count=30&device_platform=web&sessionToken=secret-token`}], origin: "https://www.example.test", stack},
     {seq: 7, category: "reverse", phase: "call", api: "URLSearchParams.set", args: [{url_object_id: 91, search_params_id: 92, name: "X-Signature", value: "secret-one", value_ref: "string_ref:records-query-xsignature"}], origin: "https://www.example.test", stack},
     {seq: 8, category: "reverse", phase: "call", api: "Headers.constructor", args: [{headers_id: 501}], origin: "https://www.example.test", stack},
     {seq: 9, category: "reverse", phase: "call", api: "Headers.set", args: [{headers_id: 501, name: "X-Session-Token", value: "secret-token", value_ref: "string_ref:records-header-sessiontoken", redacted: true}], origin: "https://www.example.test", stack},
@@ -16780,7 +16780,7 @@ test("buildAgentInputPack maps records request fields and header sources", () =>
       is_fetch_like_api: true,
       headers: [
         {name: "accept", value: "application/json", value_length: 16},
-        {name: "accept-language", value: "zh-CN,zh;q=0.9", value_length: 14},
+        {name: "accept-language", value: "en-US,en;q=0.9", value_length: 14},
         {name: "cookie", redacted: true, value_length: 64},
         {name: "referer", value: "https://www.example.test/feed", value_length: 29},
         {name: "sec-fetch-site", value: "same-origin", value_length: 11},
@@ -16811,7 +16811,7 @@ test("buildAgentInputPack maps records request fields and header sources", () =>
       url: scriptUrl,
       content_path: "assets/trace_records/feed-prefetch.js",
       content: [
-        "function fetchItemList(baseUrl) {",
+        "function fetchRecords(baseUrl) {",
         "  const seed = document.cookie + localStorage.getItem('web_id');",
         "  const mixed = Math.imul(new DataView(new TextEncoder().encode(seed).buffer).getUint32(0, true), 16777619);",
         "  baseUrl.searchParams.set('X-Signature', mixed);",

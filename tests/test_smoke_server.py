@@ -179,7 +179,7 @@ class SmokeServerTests(unittest.TestCase):
         self.assertIn("sessionToken", content)
         self.assertIn("requestSessionTokenHeader", content)
         self.assertIn("requestXSignatureHeader", content)
-        self.assertIn("itemListRequestHeaderNames", content)
+        self.assertIn("recordsRequestHeaderNames", content)
         self.assertIn("TextEncoder", content)
         self.assertIn("DataView", content)
         self.assertIn("Math.imul", content)

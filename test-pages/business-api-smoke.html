@@ -41,12 +41,12 @@
 
   const params = new URLSearchParams();
   params.set("client_time", "1");
-  params.set("app_id", "1988");
+  params.set("app_id", "1000");
   params.set("app_name", "demo_web");
   params.set("browser_language", navigator.language || "unknown");
   params.set("browser_platform", navigator.platform || "unknown");
   params.set("count", "30");
-  params.set("device_platform", "web_pc");
+  params.set("device_platform", "web");
   params.set("screen_height", String(screen.height || 0));
   params.set("screen_width", String(screen.width || 0));
   params.set("source", "business-api-smoke");
@@ -56,7 +56,7 @@
   const apiUrl = new URL("/api/records/list/", location.href);
   apiUrl.search = params.toString();
   results.apiUrl = apiUrl.href;
-  results.itemListQueryKeys = Array.from(apiUrl.searchParams.keys()).sort();
+  results.recordsQueryKeys = Array.from(apiUrl.searchParams.keys()).sort();
 
   const itemHeaders = new Headers();
   itemHeaders.set("X-XTrace-Smoke", "records-fetch");
@@ -86,14 +86,14 @@
   const fetchJson = await fetchResponse.json();
   results.fetchItems = fetchJson.items.length;
   results.fetchRoute = fetchJson.route;
-  results.itemListEchoedQueryKeys = Object.keys(fetchJson.query).sort();
-  results.itemListRequestHeaderNames = fetchJson.request_headers
+  results.recordsEchoedQueryKeys = Object.keys(fetchJson.query).sort();
+  results.recordsRequestHeaderNames = fetchJson.request_headers
     .map((header) => header.name.toLowerCase())
     .sort();
-  results.itemListCustomHeadersReachedServer =
-    results.itemListRequestHeaderNames.includes("x-signature") &&
-    results.itemListRequestHeaderNames.includes("x-session-token") &&
-    results.itemListRequestHeaderNames.includes("x-xtrace-smoke");
+  results.recordsCustomHeadersReachedServer =
+    results.recordsRequestHeaderNames.includes("x-signature") &&
+    results.recordsRequestHeaderNames.includes("x-session-token") &&
+    results.recordsRequestHeaderNames.includes("x-xtrace-smoke");
 
   await new Promise((resolve) => {
     const xhr = new XMLHttpRequest();

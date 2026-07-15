@@ -648,8 +648,8 @@ class ValidateTraceTests(unittest.TestCase):
         endpoint = "https://www.example.test/api/records/list/"
         get_url = (
             endpoint
-            + "?client_time=1&app_id=1988&app_name=demo_web&browser_language=zh-CN"
-            + "&browser_platform=MacIntel&count=30&device_platform=web_pc"
+            + "?client_time=1&app_id=1000&app_name=demo_web&browser_language=en-US"
+            + "&browser_platform=MacIntel&count=30&device_platform=web"
             + "&screen_height=600&screen_width=800&source=business-api-smoke"
             + "&sessionToken=query-demo&X-Signature=demo"
         )
@@ -669,7 +669,7 @@ class ValidateTraceTests(unittest.TestCase):
             category="fingerprint",
             seq=seq,
             event_id=f"session-1:{seq}",
-            args=[{"value": "zh-CN"}],
+            args=[{"value": "en-US"}],
             stack=stack,
         ))
         seq += 1
@@ -918,7 +918,7 @@ class ValidateTraceTests(unittest.TestCase):
 
         browser_headers = [
             self.network_header_args("Accept", "*/*"),
-            self.network_header_args("Accept-Language", "zh-CN,zh;q=0.9"),
+            self.network_header_args("Accept-Language", "en-US,en;q=0.9"),
             self.network_header_args("sec-ch-ua", '"Chromium";v="151"'),
             self.network_header_args("sec-ch-ua-mobile", "?0"),
             self.network_header_args("sec-ch-ua-platform", '"macOS"'),
