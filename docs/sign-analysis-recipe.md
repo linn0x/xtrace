@@ -81,12 +81,23 @@ closes. It is an assembly of capture, never a recomputation claim.
 python3 scripts/sign_pipeline.py replay analysis/a   # reads analysis/a/sign_artifact.json
 ```
 
-The oracle tries every standard **keyless** transform of each captured candidate
-input — md5 / sha1 / sha2 / sha3 / blake2 / crc32 digests and hex/base64
-encodings — and reports which ones reproduce a field, as `exact`, `prefix`, or
-`substring`. It also records an `observed_output_edge` when a captured
-`crypto.subtle` `.ret` already equals the field (no recomputation needed).
-`replay.json` gives a per-field `derivations` list and a `resolution_rate`.
+The oracle tries a family of standard transforms of each captured candidate input
+and reports which ones reproduce a field, as `exact`, `prefix`, or `substring`:
+
+- **keyless single-step** — md5 / sha1 / sha2 / sha3 / blake2 / crc32 digests and
+  hex/base64 encodings (`H(input)`);
+- **encode-then-hash** — `H(hex(input))`, `H(base64(input))`, …;
+- **hash-of-hash** — `H2(H1(input))` over the digest bytes or its hex;
+- **HMAC** — `HMAC(key, msg)` with the key and message drawn from the candidate
+  pool (each derivation names its `key` / `input` operands);
+- **salted concat** — `H(input ‖ salt)`, salt drawn from the candidate pool.
+
+HMAC keys and salts are only ever taken from **observed** material — an unknown
+constant is never guessed (that would be generation, not verification). It also
+records an `observed_output_edge` when a captured `crypto.subtle` `.ret` already
+equals the field (no recomputation needed). `replay.json` gives a per-field
+`derivations` list (each with a readable `spec`, e.g. `hex(HMAC_sha256(key,
+msg))`) and a `resolution_rate`.
 
 This **verifies the observed signature** — it proves or falsifies the
 input→output edge with general algorithms; it does **not** sign new inputs (not a

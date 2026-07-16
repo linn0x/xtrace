@@ -241,6 +241,54 @@ class SignPipelineTests(unittest.TestCase):
         self.assertFalse(by["f_none"]["resolved"])
         self.assertIn("f_none", rep["summary"]["unresolved_fields"])
 
+    def test_replay_oracle_hmac_and_multistep(self):
+        import hmac as _hmac
+        key = "device-secret-key-abcdef012345"
+        msg = "user=42&ts=1783000000&nonce=abcd"
+        plain = "payload-abcdefghijklmnop-0123456789"
+        salt = "app-pepper-ZZZ-99887766"
+        hmac_out = _hmac.new(key.encode(), msg.encode(), "sha256").hexdigest()
+        hoh_out = hashlib.sha256(hashlib.sha1(plain.encode()).digest()).hexdigest()
+        ethen_out = hashlib.sha256(base64.b64encode(plain.encode())).hexdigest()
+        concat_out = hashlib.sha256((plain + salt).encode()).hexdigest()
+        art = {
+            "anchor": {"carrier": "t"},
+            "candidate_inputs": [
+                {"api": "String.scan", "d_ms": -9, "value_sha": "k", "value": key},
+                {"api": "String.scan", "d_ms": -8, "value_sha": "m", "value": msg},
+                {"api": "String.scan", "d_ms": -7, "value_sha": "p", "value": plain},
+                {"api": "String.scan", "d_ms": -6, "value_sha": "s", "value": salt},
+            ],
+            "candidate_outputs": [],
+            "fields": [
+                {"field": "f_hmac", "evidence": "unpaired", "output_value": hmac_out},
+                {"field": "f_hoh", "evidence": "unpaired", "output_value": hoh_out},
+                {"field": "f_ethen", "evidence": "unpaired", "output_value": ethen_out},
+                {"field": "f_concat", "evidence": "unpaired", "output_value": concat_out},
+            ],
+        }
+        rep = sp.replay_oracle(art)
+        by = {f["field"]: f for f in rep["fields"]}
+        # every field a keyless single hash CANNOT reproduce is now resolved
+        for k in ("f_hmac", "f_hoh", "f_ethen", "f_concat"):
+            self.assertTrue(by[k]["resolved"], f"{k} should resolve")
+        self.assertEqual(rep["summary"]["resolution_rate"], 1.0)
+        self.assertEqual(rep["summary"]["newly_resolved_vs_pairing"], 4)
+
+        def has(field, structure):
+            return any(d["structure"] == structure for d in by[field]["derivations"])
+        self.assertTrue(has("f_hmac", "HMAC(key, msg)"))
+        self.assertTrue(has("f_hoh", "H2(H1(input))"))
+        self.assertTrue(has("f_ethen", "H(enc(input))"))
+        self.assertTrue(has("f_concat", "H(a||b)"))
+
+        # the HMAC derivation names its key + msg operands and reads structurally
+        hd = next(d for d in by["f_hmac"]["derivations"] if d["structure"] == "HMAC(key, msg)")
+        self.assertIn("HMAC_sha256(key, msg)", hd["spec"])
+        self.assertEqual(hd["key_value_sha"], "k")
+        self.assertEqual(hd["input_value_sha"], "m")
+        self.assertIn("hmac", rep["algorithms_tried"])
+
     def test_export_algo_spec_statuses_and_render(self):
         plain = "abcdefghijklmnop-0123456789"
         sha = hashlib.sha256(plain.encode()).hexdigest()

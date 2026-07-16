@@ -32,6 +32,7 @@ import bisect
 import collections
 import csv
 import hashlib
+import hmac
 import json
 import math
 import re
@@ -700,6 +701,121 @@ def _match_slice(target: str, produced: str):
     return None
 
 
+# ---- multi-step / keyed derivations (HMAC, hash-of-hash, encode-then-hash, concat) ----
+# Real signatures are frequently more than one keyless hash. These stay over OBSERVED
+# material only: HMAC keys and concat salts are drawn from the captured candidate pool,
+# never guessed -- guessing an unknown constant would be generation, not verification.
+MULTI_HASHES = ("md5", "sha1", "sha256", "sha512")  # bounded set for 2-step / HMAC compositions
+COMBINATORIAL_CAP = 24                              # distinct values paired for HMAC/concat (N^2)
+
+
+def _digest(algo, data):
+    return hashlib.new(algo, data).digest()
+
+
+def _derivation_universe(values):
+    """Yield derivation dicts {structure, algo, encoding, produced, <operands>} for every
+    transform tested over de-duplicated candidate values. Field-independent, so it is
+    built once and matched against all fields.
+
+    Single-input: keyless H(input) + direct encodings (via _transforms), encode-then-hash
+    H(enc(input)), and hash-of-hash H2(H1(input)). Pair-input over the candidate pool:
+    HMAC(key, msg) and salted concatenation H(input || salt)."""
+    seen, pool = set(), []
+    for v in values:
+        if v and v not in seen:
+            seen.add(v)
+            pool.append(v)
+    combo = pool[:COMBINATORIAL_CAP]
+
+    for v in pool:
+        data = v.encode("utf-8", "surrogatepass")
+        for algo, enc, produced in _transforms(v):          # keyless single + direct encodings
+            yield {"structure": "H(input)", "algo": algo, "encoding": enc,
+                   "produced": produced, "input": v}
+        for pre_enc, pre in _encode_forms(data):             # encode-then-hash
+            pb = pre.encode("ascii")
+            for algo in MULTI_HASHES:
+                for enc, produced in _encode_forms(_digest(algo, pb)):
+                    yield {"structure": "H(enc(input))", "algo": algo, "encoding": enc,
+                           "pre_encoding": pre_enc, "produced": produced, "input": v}
+        for a1 in MULTI_HASHES:                              # hash-of-hash H2(H1(input))
+            d1 = _digest(a1, data)
+            for form, inner in (("digest", d1), ("hex", d1.hex().encode("ascii"))):
+                for a2 in MULTI_HASHES:
+                    for enc, produced in _encode_forms(_digest(a2, inner)):
+                        yield {"structure": "H2(H1(input))", "algo": a2, "inner_algo": a1,
+                               "inner_form": form, "encoding": enc, "produced": produced,
+                               "input": v}
+
+    for i, a in enumerate(combo):
+        ad = a.encode("utf-8", "surrogatepass")
+        for j, b in enumerate(combo):
+            if i == j:
+                continue
+            bd = b.encode("utf-8", "surrogatepass")
+            for algo in REPLAY_HASHES:                       # HMAC(key=a, msg=b)
+                try:
+                    mac = hmac.new(ad, bd, algo).digest()
+                except (ValueError, TypeError):
+                    continue
+                for enc, produced in _encode_forms(mac):
+                    yield {"structure": "HMAC(key, msg)", "algo": algo, "encoding": enc,
+                           "produced": produced, "key": a, "input": b}
+            catd = ad + bd                                   # salted concat H(input || salt)
+            for algo in MULTI_HASHES:
+                for enc, produced in _encode_forms(_digest(algo, catd)):
+                    yield {"structure": "H(a||b)", "algo": algo, "encoding": enc,
+                           "produced": produced, "input": a, "salt": b}
+
+
+def _render_spec(d, ms):
+    """Readable pseudocode for a matched derivation, including any field slice."""
+    enc_fn = _ENC_FN.get(d.get("encoding"), d.get("encoding"))
+    algo, st = d.get("algo"), d.get("structure")
+    if st == "HMAC(key, msg)":
+        core = f"HMAC_{algo}(key, msg)"
+    elif st == "H(a||b)":
+        core = f"{algo}(input || salt)"
+    elif st == "H(enc(input))":
+        core = f"{algo}({d.get('pre_encoding')}(input))"
+    elif st == "H2(H1(input))":
+        core = f"{algo}({d.get('inner_algo')}(input)[{d.get('inner_form')}])"
+    elif algo == "identity":
+        core = None
+    else:
+        core = f"{algo}(input)"
+    expr = f"{enc_fn}(input)" if core is None else f"{enc_fn}({core})"
+    mk, sl = ms.get("match_kind"), ms.get("slice") or [0, 0]
+    if mk == "prefix":
+        expr += f"[:{sl[1]}]"
+    elif mk == "substring":
+        expr += f"[{sl[0]}:{sl[1]}]"
+    return expr
+
+
+def _record_derivation(d, ms, value_meta):
+    """Flatten a universe derivation + match into the replay.json derivation shape,
+    enriching each operand with its capture metadata (api / d_ms / value_sha)."""
+    def ref(val, prefix):
+        m = value_meta.get(val, {})
+        return {f"{prefix}_api": m.get("api"), f"{prefix}_d_ms": m.get("d_ms"),
+                f"{prefix}_value_sha": m.get("value_sha"), f"{prefix}_preview": (val or "")[:80]}
+    out = {"structure": d.get("structure"), "algo": d.get("algo"),
+           "encoding": d.get("encoding"), **ms, "spec": _render_spec(d, ms),
+           **ref(d.get("input"), "input")}
+    if "key" in d:
+        out.update(ref(d["key"], "key"))
+    if "salt" in d:
+        out.update(ref(d["salt"], "salt"))
+    if d.get("inner_algo"):
+        out["inner_algo"] = d["inner_algo"]
+        out["inner_form"] = d.get("inner_form")
+    if d.get("pre_encoding"):
+        out["pre_encoding"] = d["pre_encoding"]
+    return out
+
+
 def replay_oracle(artifact: dict):
     """Try to reproduce each field from the artifact's candidate inputs.
 
@@ -710,6 +826,12 @@ def replay_oracle(artifact: dict):
     one derivation was found."""
     inputs = [c for c in artifact.get("candidate_inputs", []) if c.get("value")]
     outputs = artifact.get("candidate_outputs", [])
+    value_meta = {}
+    for c in inputs:
+        value_meta.setdefault(c.get("value"), c)
+    # field-independent: build the transform universe once, match every field against it
+    universe = list(_derivation_universe([c["value"] for c in inputs]))
+    _rank = {"exact": 0, "prefix": 1, "substring": 2}
     fields_out = []
     newly = 0
     for f in artifact.get("fields", []):
@@ -723,18 +845,15 @@ def replay_oracle(artifact: dict):
                 edge = {"api": o.get("api"), "d_ms": o.get("d_ms"),
                         "value_sha": o.get("value_sha"), **ms}
                 break
-        # (2) recomputation from candidate inputs
+        # (2) recomputation: keyless single-step, encode-then-hash, hash-of-hash,
+        #     HMAC, and salted concat -- all over observed material only
         derivations = []
-        for c in inputs:
-            for algo, enc, produced in _transforms(c["value"]):
-                ms = _match_slice(target, produced)
+        if target:
+            for d in universe:
+                ms = _match_slice(target, d["produced"])
                 if ms:
-                    derivations.append({
-                        "algo": algo, "encoding": enc, **ms,
-                        "input_api": c.get("api"), "input_d_ms": c.get("d_ms"),
-                        "input_value_sha": c.get("value_sha"),
-                        "input_preview": (c["value"][:80]),
-                    })
+                    derivations.append(_record_derivation(d, ms, value_meta))
+            derivations.sort(key=lambda x: _rank.get(x.get("match_kind"), 3))
         resolved = bool(edge or derivations)
         if resolved and f.get("evidence") in ("unpaired", "context_only", None):
             newly += 1
@@ -754,7 +873,9 @@ def replay_oracle(artifact: dict):
                  "transform of a captured input reproduces a captured field. "
                  "Proves/falsifies the input->output edge; not a token generator."),
         "anchor": artifact.get("anchor"),
-        "algorithms_tried": list(REPLAY_HASHES) + ["crc32", "identity"],
+        "algorithms_tried": list(REPLAY_HASHES) + ["crc32", "identity", "hmac"],
+        "structures_tried": ["H(input)", "H(enc(input))", "H2(H1(input))",
+                             "HMAC(key,msg)", "H(input||salt)"],
         "encodings_tried": ["hex_lower", "hex_upper", "base64", "base64_nopad",
                             "base64url", "base64url_nopad"],
         "candidate_inputs_used": len(inputs),
@@ -781,7 +902,10 @@ _ENC_FN = {"hex_lower": "hex", "hex_upper": "HEX", "base64": "base64",
 
 
 def _spec_pseudocode(deriv):
-    """Readable pseudocode for one proven derivation (algo + encoding + slice)."""
+    """Readable pseudocode for one proven derivation. Prefers the spec the oracle
+    built (which encodes multi-step / keyed structure); falls back for legacy dicts."""
+    if deriv.get("spec"):
+        return deriv["spec"]
     algo, enc = deriv.get("algo"), deriv.get("encoding")
     enc_fn = _ENC_FN.get(enc, enc)
     expr = f"{enc_fn}(input)" if algo == "identity" else f"{enc_fn}({algo}(input))"
