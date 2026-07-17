@@ -45,6 +45,12 @@ MONO_RE = re.compile(rb'"mono_time_us"\s*:\s*([0-9.eE+]+)')
 TOKISH = re.compile(r"^[A-Za-z0-9_\-+/=.]{16,}$")
 TOKISH_SUB = re.compile(r"[A-Za-z0-9_\-+/=.]{16,}")
 _RESULT_KEYS = {"result_ref", "result_register_ref"}
+# Where an event CAME FROM, not what it carried. Native V8 hooks put the callsite
+# inline in args, so without this a signer's own script URL is harvested as if it
+# were hashed material.
+_PROVENANCE_KEYS = frozenset((
+    "callsite_script", "callsite_function", "callsite_source_position",
+))
 _VALUE_BASES = (
     "left", "right", "result", "first_arg", "second_arg", "value",
     "subject", "input", "key", "target", "this_arg", "separator", "search",
@@ -77,8 +83,15 @@ _ROLE_INPUT_APIS = ("TextEncoder.encode", "String.prototype.charCodeAt",
                     "String.scan", "SubtleCrypto.digest", "SubtleCrypto.sign",
                     "SubtleCrypto.encrypt")
 # APIs whose captured plaintext IS a digest/AES/sign input (the "what got hashed"
-# material). Populated by --inject-api-hooks (String.scan / crypto.subtle / JSON).
-CRYPTO_INPUT_APIS = ("String.scan", "TextEncoder.encode", "SubtleCrypto.digest",
+# material). Two independent sources feed this:
+#   - the native V8 hooks: String.prototype.charCodeAt carries the whole subject
+#     string, which is how a JS-implemented hash (CryptoJS WordArray/Utf8.parse
+#     reads its message char-by-char) exposes its preimage. Uncapped and
+#     unevadable, and the timeline dedups the per-char repeats into one row.
+#   - --inject-api-hooks: String.scan (the JS-level approximation of the same
+#     charCodeAt signal) / crypto.subtle / TextEncoder / JSON.
+CRYPTO_INPUT_APIS = ("String.prototype.charCodeAt", "String.scan",
+                     "TextEncoder.encode", "SubtleCrypto.digest",
                      "SubtleCrypto.sign", "SubtleCrypto.encrypt",
                      "SubtleCrypto.verify", "JSON.stringify")
 
@@ -260,6 +273,42 @@ def collect_window(trace: Path, lo: float, hi: float):
     return ops, net, str_hits
 
 
+MATERIAL_MIN_LEN = 24   # a plaintext long enough to be a hash/cipher preimage candidate
+
+
+def find_material_monos(trace: Path):
+    """Sorted mono times of injected plaintext-bearing events (String.scan / JSON /
+    TextEncoder / crypto boundary carrying a long string). This is the in-window
+    candidate-input material a replay needs; used to auto-anchor on a request whose
+    pre-window actually holds it (otherwise the anchored window has nothing to
+    re-derive from). One fast pass, prefiltered on the ``"inject"`` marker."""
+    monos = []
+    with trace.open("rb") as fh:
+        for line in fh:
+            if b'"inject"' not in line:
+                continue
+            m = MONO_RE.search(line)
+            if not m:
+                continue
+            try:
+                mono = float(m.group(1))
+            except ValueError:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("category") != "inject":
+                continue
+            args = e.get("args")
+            if not (isinstance(args, list) and args and isinstance(args[0], dict)):
+                continue
+            if any(isinstance(v, str) and len(v) >= MATERIAL_MIN_LEN for v in args[0].values()):
+                monos.append(mono)
+    monos.sort()
+    return monos
+
+
 def detect_signer_script(ops, families):
     """The callsite_script carrying the most compute-family ops = the signer core."""
     prefixes = compute_prefixes(families)
@@ -417,6 +466,8 @@ def build_timeline(all_ops, anchor_mono, token_fields, param_values, min_len=12,
         api = e.get("api", "")
         d = round((e.get("mono_time_us", anchor_mono) - anchor_mono) / 1000.0, 3)
         for k, v in a.items():
+            if k in _PROVENANCE_KEYS:
+                continue
             if not isinstance(v, str) or len(v) < min_len:
                 continue
             sha = sha8(v)
@@ -647,8 +698,26 @@ def build_sign_artifact(pairing, leaf_fields, timeline, crypto_inputs,
 # it never signs a new input, only re-derives the one already in the trace.
 
 # Keyless digests available everywhere via hashlib, plus crc32 (zlib). Site-neutral.
-REPLAY_HASHES = ("md5", "sha1", "sha224", "sha256", "sha384", "sha512",
-                 "sha3_256", "sha3_512", "blake2b", "blake2s")
+def _available_hashes(names):
+    """Filter to the hash algorithms this platform's hashlib actually provides.
+
+    Keeps the toolkit portable: SM3 (国密) ships on OpenSSL-3 builds but is absent
+    on older/other crypto backends. When absent it is silently dropped here rather
+    than raising mid-replay (the keyless path try/excepts too, but the multi-step
+    `_digest` helper does not, so the filtered lists are the guard)."""
+    ok = []
+    for n in names:
+        try:
+            hashlib.new(n)
+        except (ValueError, TypeError):
+            continue
+        ok.append(n)
+    return tuple(ok)
+
+
+REPLAY_HASHES = _available_hashes((
+    "md5", "sha1", "sha224", "sha256", "sha384", "sha512",
+    "sha3_256", "sha3_512", "blake2b", "blake2s", "sm3"))
 MIN_MATCH_LEN = 8   # gate prefix/substring hits so short fields don't match by chance
 
 
@@ -705,8 +774,275 @@ def _match_slice(target: str, produced: str):
 # Real signatures are frequently more than one keyless hash. These stay over OBSERVED
 # material only: HMAC keys and concat salts are drawn from the captured candidate pool,
 # never guessed -- guessing an unknown constant would be generation, not verification.
-MULTI_HASHES = ("md5", "sha1", "sha256", "sha512")  # bounded set for 2-step / HMAC compositions
+MULTI_HASHES = _available_hashes(("md5", "sha1", "sha256", "sha512", "sm3"))  # bounded 2-step / HMAC set
 COMBINATORIAL_CAP = 24                              # distinct values paired for HMAC/concat (N^2)
+JSON_LEAF_MAX = 32                                  # most leaves mined out of one JSON candidate
+JSON_LEAF_MIN_LEN = 4                               # ignore trivially short leaves
+JSON_LEAF_MAX_DEPTH = 4                             # bound recursion into nested envelopes
+
+
+def _json_leaves(value):
+    """Yield ``(json_path, leaf_str)`` for the STRING leaves of a candidate that
+    parses as a JSON object/array.
+
+    Real signers routinely wrap the signing material in a single ``JSON.stringify``
+    -- e.g. ``{"key": ..., "signStr": ..., "msg": ...}`` -- so the HMAC key and the
+    message live NESTED inside one captured value. The pair-derivations draw their
+    key/msg from standalone pool entries, so without mining they can never reach
+    nested operands. Only string leaves are mined (crypto operands are strings;
+    numbers carry format ambiguity and are skipped)."""
+    try:
+        obj = json.loads(value)
+    except (ValueError, TypeError):
+        return
+    if not isinstance(obj, (dict, list)):
+        return
+
+    def walk(node, path, depth):
+        if depth > JSON_LEAF_MAX_DEPTH:
+            return
+        if isinstance(node, dict):
+            for k, v in node.items():
+                yield from walk(v, f"{path}.{k}" if path else str(k), depth + 1)
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                yield from walk(v, f"{path}[{i}]", depth + 1)
+        elif isinstance(node, str) and len(node) >= JSON_LEAF_MIN_LEN:
+            yield path, node
+
+    yield from walk(obj, "", 0)
+
+
+# ---- SM4 (国密 GB/T 32907) block cipher, pure-Python, stdlib only ----
+# Added so the oracle can VERIFY a 国密-encrypted carrier field: does SM4 of an
+# OBSERVED plaintext under an OBSERVED key reproduce the captured ciphertext?
+# Forward encrypt-and-compare only -- same stance as the hash/HMAC paths: it
+# re-derives a captured field from captured material, it never decrypts to reveal
+# a secret nor encrypts a novel input. SM4 is deterministic, so a match is proof.
+_SM4_SBOX = bytes((
+    0xd6,0x90,0xe9,0xfe,0xcc,0xe1,0x3d,0xb7,0x16,0xb6,0x14,0xc2,0x28,0xfb,0x2c,0x05,
+    0x2b,0x67,0x9a,0x76,0x2a,0xbe,0x04,0xc3,0xaa,0x44,0x13,0x26,0x49,0x86,0x06,0x99,
+    0x9c,0x42,0x50,0xf4,0x91,0xef,0x98,0x7a,0x33,0x54,0x0b,0x43,0xed,0xcf,0xac,0x62,
+    0xe4,0xb3,0x1c,0xa9,0xc9,0x08,0xe8,0x95,0x80,0xdf,0x94,0xfa,0x75,0x8f,0x3f,0xa6,
+    0x47,0x07,0xa7,0xfc,0xf3,0x73,0x17,0xba,0x83,0x59,0x3c,0x19,0xe6,0x85,0x4f,0xa8,
+    0x68,0x6b,0x81,0xb2,0x71,0x64,0xda,0x8b,0xf8,0xeb,0x0f,0x4b,0x70,0x56,0x9d,0x35,
+    0x1e,0x24,0x0e,0x5e,0x63,0x58,0xd1,0xa2,0x25,0x22,0x7c,0x3b,0x01,0x21,0x78,0x87,
+    0xd4,0x00,0x46,0x57,0x9f,0xd3,0x27,0x52,0x4c,0x36,0x02,0xe7,0xa0,0xc4,0xc8,0x9e,
+    0xea,0xbf,0x8a,0xd2,0x40,0xc7,0x38,0xb5,0xa3,0xf7,0xf2,0xce,0xf9,0x61,0x15,0xa1,
+    0xe0,0xae,0x5d,0xa4,0x9b,0x34,0x1a,0x55,0xad,0x93,0x32,0x30,0xf5,0x8c,0xb1,0xe3,
+    0x1d,0xf6,0xe2,0x2e,0x82,0x66,0xca,0x60,0xc0,0x29,0x23,0xab,0x0d,0x53,0x4e,0x6f,
+    0xd5,0xdb,0x37,0x45,0xde,0xfd,0x8e,0x2f,0x03,0xff,0x6a,0x72,0x6d,0x6c,0x5b,0x51,
+    0x8d,0x1b,0xaf,0x92,0xbb,0xdd,0xbc,0x7f,0x11,0xd9,0x5c,0x41,0x1f,0x10,0x5a,0xd8,
+    0x0a,0xc1,0x31,0x88,0xa5,0xcd,0x7b,0xbd,0x2d,0x74,0xd0,0x12,0xb8,0xe5,0xb4,0xb0,
+    0x89,0x69,0x97,0x4a,0x0c,0x96,0x77,0x7e,0x65,0xb9,0xf1,0x09,0xc5,0x6e,0xc6,0x84,
+    0x18,0xf0,0x7d,0xec,0x3a,0xdc,0x4d,0x20,0x79,0xee,0x5f,0x3e,0xd7,0xcb,0x39,0x48))
+_SM4_FK = (0xa3b1bac6, 0x56aa3350, 0x677d9197, 0xb27022dc)
+# CK[i] bytes: ck_{i,j} = (4i + j) * 7 mod 256, for j in 0..3
+_SM4_CK = tuple(
+    ((((4*i + 0) * 7) % 256) << 24) | ((((4*i + 1) * 7) % 256) << 16)
+    | ((((4*i + 2) * 7) % 256) << 8) | (((4*i + 3) * 7) % 256)
+    for i in range(32))
+
+
+def _sm4_rotl(x, n):
+    return ((x << n) | (x >> (32 - n))) & 0xffffffff
+
+
+def _sm4_tau(a):
+    return (_SM4_SBOX[(a >> 24) & 0xff] << 24 | _SM4_SBOX[(a >> 16) & 0xff] << 16
+            | _SM4_SBOX[(a >> 8) & 0xff] << 8 | _SM4_SBOX[a & 0xff])
+
+
+def _sm4_key_schedule(key16):
+    k = [int.from_bytes(key16[i*4:i*4+4], "big") ^ _SM4_FK[i] for i in range(4)]
+    rk = []
+    for i in range(32):
+        t = _sm4_tau(k[1] ^ k[2] ^ k[3] ^ _SM4_CK[i])
+        kn = k[0] ^ (t ^ _sm4_rotl(t, 13) ^ _sm4_rotl(t, 23))   # L'
+        rk.append(kn)
+        k = [k[1], k[2], k[3], kn]
+    return rk
+
+
+def _sm4_encrypt_block(rk, block16):
+    x = [int.from_bytes(block16[i*4:i*4+4], "big") for i in range(4)]
+    for i in range(32):
+        t = _sm4_tau(x[1] ^ x[2] ^ x[3] ^ rk[i])
+        xn = x[0] ^ (t ^ _sm4_rotl(t, 2) ^ _sm4_rotl(t, 10)     # L
+                     ^ _sm4_rotl(t, 18) ^ _sm4_rotl(t, 24))
+        x = [x[1], x[2], x[3], xn]
+    return b"".join(int.to_bytes(x[3 - i], 4, "big") for i in range(4))
+
+
+def _sm4_encrypt(key16, data, iv=None):
+    """SM4 encrypt of block-aligned data. ECB when iv is None, else CBC."""
+    rk = _sm4_key_schedule(key16)
+    out, prev = bytearray(), iv
+    for off in range(0, len(data), 16):
+        blk = data[off:off + 16]
+        if prev is not None:
+            blk = bytes(a ^ b for a, b in zip(blk, prev))
+        enc = _sm4_encrypt_block(rk, blk)
+        out += enc
+        if prev is not None:
+            prev = enc
+    return bytes(out)
+
+
+SM4_MSG_CAP = 4096          # cap plaintext length fed to SM4 (256 blocks) -- perf guard
+
+
+def _sm4_key_bytes(value):
+    """Interpret a candidate string as a 16-byte SM4 key, tightly: exactly 16 ASCII
+    bytes, or a 32-hex string (16 bytes). Returns None otherwise so non-keys are
+    skipped (keeps the SM4 pass fast and low-false-positive)."""
+    forms = []
+    b = value.encode("utf-8", "surrogatepass")
+    if len(b) == 16:
+        forms.append(("utf8", b))
+    if len(value) == 32:
+        try:
+            forms.append(("hex", bytes.fromhex(value)))
+        except ValueError:
+            pass
+    return forms
+
+
+def _sm4_variants(key_forms, msg):
+    """Yield (spec_mode, ciphertext_bytes) for the OBSERVED plaintext under each key
+    interpretation, in ECB and CBC (zero IV), PKCS7-padded and (if already aligned)
+    unpadded. Bounded by SM4_MSG_CAP."""
+    mb = msg.encode("utf-8", "surrogatepass")[:SM4_MSG_CAP]
+    pkcs7 = mb + bytes([16 - (len(mb) % 16)]) * (16 - (len(mb) % 16))
+    payloads = [("pkcs7", pkcs7)]
+    if mb and len(mb) % 16 == 0:
+        payloads.append(("nopad", mb))
+    for kname, key16 in key_forms:
+        for pname, data in payloads:
+            yield f"ECB/{kname}/{pname}", _sm4_encrypt(key16, data)
+            yield f"CBC/{kname}/{pname}", _sm4_encrypt(key16, data, iv=b"\x00" * 16)
+
+
+# ---- AES (FIPS-197) block cipher, pure-Python, stdlib only ----
+# The Western counterpart of SM4: CryptoJS-style JS signers routinely AES-encrypt a
+# carrier field. Same stance as SM4 -- forward encrypt-and-compare over OBSERVED
+# key + plaintext, never decrypt-to-reveal, never encrypt a novel input. Tables are
+# derived at import (GF(2^8) inverse + affine) so there is no hand-typed S-box.
+def _aes_tables():
+    exp = [0] * 512
+    log = [0] * 256
+    x = 1
+    for i in range(255):
+        exp[i] = x
+        log[x] = i
+        x ^= ((x << 1) ^ (0x1b if x & 0x80 else 0)) & 0xff   # x *= 3 in GF(2^8)
+    for i in range(255, 510):
+        exp[i] = exp[i - 255]
+    sbox = [0] * 256
+    for a in range(256):
+        b = 0 if a == 0 else exp[255 - log[a]]               # multiplicative inverse
+        s = b
+        for _ in range(4):
+            b = ((b << 1) | (b >> 7)) & 0xff
+            s ^= b
+        sbox[a] = s ^ 0x63                                   # affine transform
+    return sbox, exp, log
+
+
+_AES_SBOX, _AES_EXP, _AES_LOG = _aes_tables()
+
+
+def _aes_gmul(a, b):
+    return 0 if a == 0 or b == 0 else _AES_EXP[_AES_LOG[a] + _AES_LOG[b]]
+
+
+def _aes_key_schedule(key):
+    nk = len(key) // 4
+    nr = {4: 10, 6: 12, 8: 14}[nk]
+    w = [list(key[4 * i:4 * i + 4]) for i in range(nk)]
+    rcon = 1
+    for i in range(nk, 4 * (nr + 1)):
+        t = list(w[i - 1])
+        if i % nk == 0:
+            t = t[1:] + t[:1]
+            t = [_AES_SBOX[x] for x in t]
+            t[0] ^= rcon
+            rcon = ((rcon << 1) ^ (0x1b if rcon & 0x80 else 0)) & 0xff
+        elif nk > 6 and i % nk == 4:
+            t = [_AES_SBOX[x] for x in t]
+        w.append([w[i - nk][j] ^ t[j] for j in range(4)])
+    return w, nr
+
+
+def _aes_encrypt_block(w, nr, blk):
+    st = list(blk)
+
+    def add_round_key(rnd):
+        for c in range(4):
+            for r in range(4):
+                st[c * 4 + r] ^= w[rnd * 4 + c][r]
+
+    add_round_key(0)
+    for rnd in range(1, nr + 1):
+        for i in range(16):
+            st[i] = _AES_SBOX[st[i]]
+        for r in range(1, 4):                                # ShiftRows
+            row = [st[r], st[4 + r], st[8 + r], st[12 + r]]
+            row = row[r:] + row[:r]
+            st[r], st[4 + r], st[8 + r], st[12 + r] = row
+        if rnd != nr:                                        # MixColumns (skip last round)
+            for c in range(4):
+                col = st[4 * c:4 * c + 4]
+                st[4 * c + 0] = _aes_gmul(2, col[0]) ^ _aes_gmul(3, col[1]) ^ col[2] ^ col[3]
+                st[4 * c + 1] = col[0] ^ _aes_gmul(2, col[1]) ^ _aes_gmul(3, col[2]) ^ col[3]
+                st[4 * c + 2] = col[0] ^ col[1] ^ _aes_gmul(2, col[2]) ^ _aes_gmul(3, col[3])
+                st[4 * c + 3] = _aes_gmul(3, col[0]) ^ col[1] ^ col[2] ^ _aes_gmul(2, col[3])
+        add_round_key(rnd)
+    return bytes(st)
+
+
+def _aes_encrypt(key, data, iv=None):
+    """AES encrypt of block-aligned data. ECB when iv is None, else CBC."""
+    w, nr = _aes_key_schedule(key)
+    out, prev = bytearray(), iv
+    for off in range(0, len(data), 16):
+        blk = data[off:off + 16]
+        if prev is not None:
+            blk = bytes(a ^ b for a, b in zip(blk, prev))
+        enc = _aes_encrypt_block(w, nr, blk)
+        out += enc
+        if prev is not None:
+            prev = enc
+    return bytes(out)
+
+
+def _aes_key_bytes(value):
+    """Interpret a candidate as an AES key: exactly 16/24/32 ASCII bytes, or a
+    32/48/64-hex string (AES-128/192/256). Tight, so non-keys are skipped."""
+    forms = []
+    b = value.encode("utf-8", "surrogatepass")
+    if len(b) in (16, 24, 32):
+        forms.append((f"utf8{len(b) * 8}", b))
+    if len(value) in (32, 48, 64):
+        try:
+            forms.append((f"hex{len(value) // 2 * 8}", bytes.fromhex(value)))
+        except ValueError:
+            pass
+    return forms
+
+
+def _aes_variants(key_forms, msg):
+    """(spec_mode, ciphertext) of the OBSERVED plaintext under each key, ECB and CBC
+    (zero IV), PKCS7-padded and (if aligned) unpadded. Bounded by SM4_MSG_CAP."""
+    mb = msg.encode("utf-8", "surrogatepass")[:SM4_MSG_CAP]
+    pad = 16 - (len(mb) % 16)
+    payloads = [("pkcs7", mb + bytes([pad]) * pad)]
+    if mb and len(mb) % 16 == 0:
+        payloads.append(("nopad", mb))
+    for kname, key in key_forms:
+        for pname, data in payloads:
+            yield f"ECB/{kname}/{pname}", _aes_encrypt(key, data)
+            yield f"CBC/{kname}/{pname}", _aes_encrypt(key, data, iv=b"\x00" * 16)
 
 
 def _digest(algo, data):
@@ -748,6 +1084,8 @@ def _derivation_universe(values):
                                "inner_form": form, "encoding": enc, "produced": produced,
                                "input": v}
 
+    sm4_keys = {v: _sm4_key_bytes(v) for v in combo}         # 16-byte key interpretations, once
+    aes_keys = {v: _aes_key_bytes(v) for v in combo}         # 16/24/32-byte key interpretations
     for i, a in enumerate(combo):
         ad = a.encode("utf-8", "surrogatepass")
         for j, b in enumerate(combo):
@@ -767,6 +1105,18 @@ def _derivation_universe(values):
                 for enc, produced in _encode_forms(_digest(algo, catd)):
                     yield {"structure": "H(a||b)", "algo": algo, "encoding": enc,
                            "produced": produced, "input": a, "salt": b}
+            if sm4_keys[a]:                                  # SM4(key=a, plaintext=b), 国密
+                for mode, ct in _sm4_variants(sm4_keys[a], b):
+                    for enc, produced in _encode_forms(ct):
+                        yield {"structure": "SM4(key, msg)", "algo": "sm4",
+                               "sm4_mode": mode, "encoding": enc,
+                               "produced": produced, "key": a, "input": b}
+            if aes_keys[a]:                                  # AES(key=a, plaintext=b)
+                for mode, ct in _aes_variants(aes_keys[a], b):
+                    for enc, produced in _encode_forms(ct):
+                        yield {"structure": "AES(key, msg)", "algo": "aes",
+                               "cipher_mode": mode, "encoding": enc,
+                               "produced": produced, "key": a, "input": b}
 
 
 def _render_spec(d, ms):
@@ -775,6 +1125,10 @@ def _render_spec(d, ms):
     algo, st = d.get("algo"), d.get("structure")
     if st == "HMAC(key, msg)":
         core = f"HMAC_{algo}(key, msg)"
+    elif st == "SM4(key, msg)":
+        core = f"SM4-{(d.get('sm4_mode') or '').split('/')[0]}(key, msg)"
+    elif st == "AES(key, msg)":
+        core = f"AES-{(d.get('cipher_mode') or '').split('/')[0]}(key, msg)"
     elif st == "H(a||b)":
         core = f"{algo}(input || salt)"
     elif st == "H(enc(input))":
@@ -799,8 +1153,12 @@ def _record_derivation(d, ms, value_meta):
     enriching each operand with its capture metadata (api / d_ms / value_sha)."""
     def ref(val, prefix):
         m = value_meta.get(val, {})
-        return {f"{prefix}_api": m.get("api"), f"{prefix}_d_ms": m.get("d_ms"),
-                f"{prefix}_value_sha": m.get("value_sha"), f"{prefix}_preview": (val or "")[:80]}
+        r = {f"{prefix}_api": m.get("api"), f"{prefix}_d_ms": m.get("d_ms"),
+             f"{prefix}_value_sha": m.get("value_sha"), f"{prefix}_preview": (val or "")[:80]}
+        if m.get("json_path") is not None:      # operand mined from a JSON envelope
+            r[f"{prefix}_json_path"] = m.get("json_path")
+            r[f"{prefix}_json_leaf_of"] = m.get("json_leaf_of")
+        return r
     out = {"structure": d.get("structure"), "algo": d.get("algo"),
            "encoding": d.get("encoding"), **ms, "spec": _render_spec(d, ms),
            **ref(d.get("input"), "input")}
@@ -808,6 +1166,10 @@ def _record_derivation(d, ms, value_meta):
         out.update(ref(d["key"], "key"))
     if "salt" in d:
         out.update(ref(d["salt"], "salt"))
+    if d.get("sm4_mode"):
+        out["sm4_mode"] = d["sm4_mode"]
+    if d.get("cipher_mode"):
+        out["cipher_mode"] = d["cipher_mode"]
     if d.get("inner_algo"):
         out["inner_algo"] = d["inner_algo"]
         out["inner_form"] = d.get("inner_form")
@@ -829,8 +1191,27 @@ def replay_oracle(artifact: dict):
     value_meta = {}
     for c in inputs:
         value_meta.setdefault(c.get("value"), c)
+    # Mine leaf fields out of any candidate that is a JSON envelope, so nested
+    # signing material (an HMAC key + its message inside one JSON.stringify)
+    # becomes first-class operands for the pair-derivations. Mined leaves inherit
+    # their parent's capture provenance, tagged with the json_path they came from.
+    pool_values = [c["value"] for c in inputs]
+    for c in inputs:
+        mined = 0
+        for path, leaf in _json_leaves(c["value"]):
+            if leaf in value_meta:
+                continue
+            value_meta[leaf] = {
+                "value": leaf, "api": c.get("api"), "d_ms": c.get("d_ms"),
+                "value_sha": sha8(leaf), "category": c.get("category"),
+                "json_leaf_of": c.get("value_sha") or sha8(c["value"]),
+                "json_path": path}
+            pool_values.append(leaf)
+            mined += 1
+            if mined >= JSON_LEAF_MAX:
+                break
     # field-independent: build the transform universe once, match every field against it
-    universe = list(_derivation_universe([c["value"] for c in inputs]))
+    universe = list(_derivation_universe(pool_values))
     _rank = {"exact": 0, "prefix": 1, "substring": 2}
     fields_out = []
     newly = 0
@@ -873,12 +1254,15 @@ def replay_oracle(artifact: dict):
                  "transform of a captured input reproduces a captured field. "
                  "Proves/falsifies the input->output edge; not a token generator."),
         "anchor": artifact.get("anchor"),
-        "algorithms_tried": list(REPLAY_HASHES) + ["crc32", "identity", "hmac"],
+        "algorithms_tried": list(REPLAY_HASHES) + ["crc32", "identity", "hmac", "sm4", "aes"],
         "structures_tried": ["H(input)", "H(enc(input))", "H2(H1(input))",
-                             "HMAC(key,msg)", "H(input||salt)"],
+                             "HMAC(key,msg)", "H(input||salt)", "SM4(key,msg)",
+                             "AES(key,msg)"],
         "encodings_tried": ["hex_lower", "hex_upper", "base64", "base64_nopad",
                             "base64url", "base64url_nopad"],
         "candidate_inputs_used": len(inputs),
+        "operand_pool_size": len(pool_values),
+        "json_leaf_operands_mined": len(pool_values) - len(inputs),
         "summary": {
             "fields_total": total,
             "fields_resolved": resolved_n,
@@ -1098,6 +1482,26 @@ def cmd_explain(args):
                 or any(h.get("name") == carrier for h in headers or [])):
             matches.append((mono, url, headers, body_text))
     matches.sort(key=lambda m: m[0])
+    # auto-anchor (gap 4): pick the request whose pre-window holds the most injected
+    # material, so the anchored window actually contains the preimage candidates a
+    # replay must re-derive from (manual --anchor-index otherwise).
+    if getattr(args, "anchor_select", "index") == "material" and matches:
+        mats = find_material_monos(args.trace)
+        win = args.window_ms * 1000.0
+        best_i, best_n = args.anchor_index, -1
+        for i, mm in enumerate(matches):
+            lo_i = bisect.bisect_left(mats, mm[0] - win)
+            hi_i = bisect.bisect_right(mats, mm[0])
+            n = hi_i - lo_i
+            if n > best_n:
+                best_n, best_i = n, i
+        if best_n > 0:
+            print(f"[auto-anchor] index {best_i} of {len(matches)} "
+                  f"({best_n} material events in {args.window_ms}ms window)", file=sys.stderr)
+            args.anchor_index = best_i
+        else:
+            print(f"[auto-anchor] no request window holds injected material; "
+                  f"using --anchor-index {args.anchor_index}", file=sys.stderr)
     if not matches or args.anchor_index >= len(matches):
         print(f"No request carrying {carrier} at index {args.anchor_index} "
               f"(only {len(matches)} found)", file=sys.stderr)
@@ -1457,6 +1861,9 @@ def main(argv=None):
     e.add_argument("--window-ms", type=float, default=300.0)
     e.add_argument("--min-entropy", type=float, default=4.0)
     e.add_argument("--anchor-index", type=int, default=0)
+    e.add_argument("--anchor-select", choices=("index", "material"), default="index",
+                   help="'material' auto-picks the anchor whose window holds the most "
+                        "injected plaintext material (else use --anchor-index)")
     e.add_argument("--compute-families", default=DEFAULT_FAMILIES,
                    help=f"comma list from {list(COMPUTE_FAMILIES)} (default: {DEFAULT_FAMILIES})")
     e.set_defaults(func=cmd_explain)

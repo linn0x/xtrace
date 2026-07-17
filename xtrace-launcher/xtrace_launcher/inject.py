@@ -101,19 +101,25 @@ _PREAMBLE_TMPL = r"""
   //
   // Performance (lessons from heavy production SPAs):
   // 1) Only materialize when i===0 (Utf8.parse always starts at 0). Copying the
-  //    whole string on every char is O(L^2).
-  // 2) A permanent JS wrapper on every charCodeAt of a 40k string is still ~L
-  //    JS calls and starves the SPA. After capturing at i===0, hand the rest of
-  //    the synchronous scan back to *native* charCodeAt and re-hook on a
-  //    microtask (CryptoJS Utf8.parse is fully sync).
-  // 3) Delay install a few seconds so the page can hydrate first.
+  //    whole string on every char is O(L^2); copy once at i===0 makes it O(L).
+  // 2) Stay ARMED across scans. The old code disarmed globally after every scan
+  //    and re-armed on a microtask -- but a signer parses the body THEN the
+  //    canonical preimage back-to-back in ONE sync turn, so the second parse ran
+  //    on native charCodeAt and the hash INPUT was never captured (observed on JD:
+  //    body scans present, canonical absent). Keeping the hook armed captures
+  //    every distinct synchronous scan. Cost is ~L cheap JS calls per scan (no
+  //    copy for i>0), which the page already pays for its own parse.
+  // 3) A high-threshold fast-path still hands truly pathological strings (>64k,
+  //    e.g. an embedded data: image) back to native to cap that one case.
+  // 4) Delay install a few seconds so the page can hydrate first.
   const SCAN_CAP = __SCAN_CAP__, SCAN_MIN = 24, SCAN_DELAY_MS = __SCAN_DELAY_MS__;
+  const SCAN_FASTPATH = 65536;
   setTimeout(() => {
     const orig = String.prototype.charCodeAt;
     let _lastScan = null;
     let _pending = false;
     const hooked = function (i) {
-      if ((i | 0) === 0) {
+      if ((i | 0) === 0 && !_busy) {
         const len = this.length;
         if (len >= SCAN_MIN) {
           const s = "" + this;
@@ -121,16 +127,19 @@ _PREAMBLE_TMPL = r"""
             _lastScan = s;
             emit("String.scan", [{ type: "string", len, value: s.slice(0, SCAN_CAP) }]);
           }
-        }
-        // Fast-path the remainder of this sync Utf8.parse: native loop, then
-        // re-arm the hook after the current turn (covers the next message).
-        String.prototype.charCodeAt = orig;
-        if (!_pending) {
-          _pending = true;
-          queueMicrotask(() => {
-            _pending = false;
-            String.prototype.charCodeAt = hooked;
-          });
+          // Only for pathologically long strings: hand the rest of this sync scan
+          // to native and re-arm next turn. Normal signing strings stay armed so
+          // back-to-back distinct scans (body THEN canonical) are all captured.
+          if (len >= SCAN_FASTPATH) {
+            String.prototype.charCodeAt = orig;
+            if (!_pending) {
+              _pending = true;
+              queueMicrotask(() => {
+                _pending = false;
+                String.prototype.charCodeAt = hooked;
+              });
+            }
+          }
         }
       }
       return orig.call(this, i);

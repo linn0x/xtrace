@@ -1409,6 +1409,266 @@ def build_vmp_hotspots(
     return records[:limit]
 
 
+def classify_opcode_shape(apis: Counter) -> dict[str, str]:
+    """General op-shape label for a VM handler from its API mix ALONE -- no VM- or
+    site-specific knowledge, so it applies to any JSVMP. This is a heuristic HINT
+    over observed primitive ops; the joined source snippet is the ground truth.
+
+    Rules are first-match over normalized op counts:
+      DISPATCH        call/apply dominate (the VM dispatcher / handler call)
+      CHAR_DECODE     charCodeAt/charAt/fromCharCode stream (input/table decode)
+      ARX_MIX         (x<<a)|(x>>>b) rotate shape *with* xor (hash/cipher mixing)
+      ROTATE/SHIFT    rotate shape without xor
+      MASK/BYTE       bitwise-and dominant (byte extract / 0xFF masking)
+      XOR_MIX/OR_...  a single boolean op dominates
+      TABLE_LOAD      array push/index dominant (state/opcode tables)
+    """
+    def n(name: str) -> int:
+        return apis.get(name, 0)
+    total = sum(apis.values()) or 1
+    shl = n("Shift.left")
+    shr = n("Shift.right") + n("Shift.unsignedRight")
+    xor, orr, andd = n("Bitwise.xor"), n("Bitwise.or"), n("Bitwise.and")
+    charcode = (n("String.prototype.charCodeAt") + n("String.prototype.charAt")
+                + n("String.fromCharCode"))
+    calls = (n("Function.prototype.call") + n("Function.prototype.apply")
+             + n("Reflect.apply"))
+    arr = (n("Array.prototype.push") + n("ArrayIterator.prototype.next")
+           + n("Array.prototype.pop"))
+    rotate = shl > 0 and shr > 0 and orr > 0            # (x<<a) | (x>>>b)
+    if calls > total * 0.5:
+        return {"shape": "DISPATCH", "basis": "call/apply dominate"}
+    if charcode > total * 0.3:
+        return {"shape": "CHAR_DECODE", "basis": "charCodeAt/charAt stream"}
+    if rotate and xor > 0:
+        return {"shape": "ARX_MIX", "basis": "rotate (shl|shr) + xor"}
+    if rotate:
+        return {"shape": "ROTATE/SHIFT", "basis": "shl|shr|or rotate"}
+    if andd > total * 0.5:
+        return {"shape": "MASK/BYTE", "basis": "bitwise-and dominant"}
+    if xor > total * 0.4:
+        return {"shape": "XOR_MIX", "basis": "xor dominant"}
+    if orr > total * 0.4:
+        return {"shape": "OR_COMBINE", "basis": "or dominant"}
+    if arr > total * 0.4:
+        return {"shape": "TABLE_LOAD", "basis": "array push/index dominant"}
+    if shl + shr > total * 0.4:
+        return {"shape": "SHIFT", "basis": "shift dominant"}
+    return {"shape": "MIXED", "basis": "no single op-shape dominates"}
+
+
+def _opcode_site_key(stack: dict[str, Any]) -> tuple[Any, ...]:
+    return (stack.get("url", ""), stack.get("function", ""),
+            stack.get("line"), stack.get("column"))
+
+
+def build_opcode_table(
+    events: list[dict[str, Any]],
+    focus_event: dict[str, Any] | None,
+    *,
+    window_us: int,
+    script_registry: ScriptRegistry | None = None,
+    snippets: list[dict[str, Any]] | None = None,
+    limit: int = 40,
+) -> list[dict[str, Any]]:
+    """General devirtualization view: each distinct VM handler site (in the focus
+    window) becomes one opcode, labeled by op-shape + family role, with its
+    constants and -- when attributable -- its source snippet. Site-neutral: any
+    JSVMP resolves to a set of handler sites, so this needs no per-target code."""
+    if not focus_event:
+        return []
+    snip_by_site: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for sn in snippets or []:
+        snip_by_site.setdefault(
+            (sn.get("url", ""), sn.get("function", ""), sn.get("column")), sn)
+    sites: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for event in events_in_window(events, focus_event, window_us=window_us):
+        family = vmp_family_for_api(str(event.get("api", "")))
+        if not family:
+            continue
+        stack = stack_top(event, script_registry)
+        key = _opcode_site_key(stack)
+        site = sites.setdefault(key, {
+            "url": stack.get("url", ""), "function": stack.get("function", ""),
+            "line": stack.get("line"), "column": stack.get("column"),
+            "apis": Counter(), "families": Counter(), "consts": Counter(),
+            "count": 0, "first_seq": None, "last_seq": None,
+        })
+        site["apis"][str(event.get("api", ""))] += 1
+        site["families"][family] += 1
+        site["count"] += 1
+        arg = first_arg(event)
+        for field in ("right", "left", "value", "shift"):
+            val = arg.get(field)
+            if isinstance(val, (int, float)) and float(val).is_integer() and 1 < abs(val) <= 0xFFFFFFFF:
+                site["consts"][int(val)] += 1
+        seq = event.get("seq")
+        if isinstance(seq, (int, float)):
+            if site["first_seq"] is None or seq < site["first_seq"]:
+                site["first_seq"] = seq
+            if site["last_seq"] is None or seq > site["last_seq"]:
+                site["last_seq"] = seq
+    ranked = sorted(sites.items(), key=lambda kv: kv[1]["count"], reverse=True)[:limit]
+    table: list[dict[str, Any]] = []
+    for opcode, (_key, site) in enumerate(ranked):
+        shape = classify_opcode_shape(site["apis"])
+        snip = snip_by_site.get((site["url"], site["function"], site["column"]))
+        table.append({
+            "opcode": opcode,
+            "shape": shape["shape"],
+            "shape_basis": shape["basis"],
+            "role": generic_candidate_role(site["families"]),
+            "count": site["count"],
+            "site": {"url": site["url"], "function": site["function"],
+                     "line": site["line"], "column": site["column"]},
+            "families": counter_records(site["families"], "family", 6),
+            "apis": counter_records(site["apis"], "api", 6),
+            "constants": [{"value": value, "count": count}
+                          for value, count in site["consts"].most_common(8)],
+            "first_seq": site["first_seq"], "last_seq": site["last_seq"],
+            "source": ((snip.get("snippet") or "")[:240] if snip else None),
+        })
+    return table
+
+
+def opcode_label_sequence(
+    events: list[dict[str, Any]],
+    focus_event: dict[str, Any] | None,
+    opcode_table: list[dict[str, Any]],
+    *,
+    window_us: int,
+    script_registry: ScriptRegistry | None = None,
+) -> list[str]:
+    """The focus window's VMP events in seq order, each labeled by the opcode
+    (handler site) that executed it. This is the VM's executed instruction trace."""
+    if not focus_event or not opcode_table:
+        return []
+    label_of: dict[tuple[Any, ...], str] = {}
+    for row in opcode_table:
+        site = row["site"]
+        key = (site["url"], site["function"], site["line"], site["column"])
+        label_of[key] = f"{row['opcode']}:{row['shape']}"
+    sequence: list[str] = []
+    for event in events_in_window(events, focus_event, window_us=window_us):
+        if not vmp_family_for_api(str(event.get("api", ""))):
+            continue
+        label = label_of.get(_opcode_site_key(stack_top(event, script_registry)))
+        if label:
+            sequence.append(label)
+    return sequence
+
+
+def build_program_sketch(
+    events: list[dict[str, Any]],
+    focus_event: dict[str, Any] | None,
+    opcode_table: list[dict[str, Any]],
+    *,
+    window_us: int,
+    script_registry: ScriptRegistry | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """The hot opcode->opcode transitions in seq order = the VM's program shape.
+    General: it labels each VMP event by which opcode (handler site) executed it,
+    then counts adjacent opcode bigrams. Reveals the dispatch loop's repeated
+    round without any site knowledge."""
+    sequence = opcode_label_sequence(
+        events, focus_event, opcode_table,
+        window_us=window_us, script_registry=script_registry)
+    grams: Counter[tuple[str, str]] = Counter(
+        (sequence[i], sequence[i + 1]) for i in range(len(sequence) - 1))
+    return [{"from": a, "to": b, "count": count}
+            for (a, b), count in grams.most_common(limit)]
+
+
+PROGRAM_MAX_PERIOD = 8     # longest loop body (in opcodes) we try to roll
+PROGRAM_MAX_OPS = 2_000_000  # bound the trace we roll, so a huge window stays cheap
+
+
+def _repeats_at(sequence: list[str], i: int, period: int) -> bool:
+    for k in range(period):
+        if sequence[i + k] != sequence[i + period + k]:
+            return False
+    return True
+
+
+def roll_loops(sequence: list[str], *, max_period: int = PROGRAM_MAX_PERIOD) -> list[dict[str, Any]]:
+    """Roll an execution trace back into loops -- the inverse of unrolling, and the
+    step that turns a linear op trace into a *program*. At each position take the
+    SHORTEST block that repeats consecutively, so a dispatch round is reported at
+    its true period rather than as some multiple of it. Straight-line stretches
+    between loops are merged into one block."""
+    raw: list[tuple[Any, ...]] = []
+    i, n = 0, len(sequence)
+    while i < n:
+        period = 0
+        for p in range(1, max_period + 1):
+            if i + 2 * p > n:
+                break
+            if _repeats_at(sequence, i, p):
+                period = p
+                break
+        if not period:
+            raw.append(("single", sequence[i]))
+            i += 1
+            continue
+        repeat = 2
+        while (i + (repeat + 1) * period <= n
+               and _repeats_at(sequence, i + (repeat - 1) * period, period)):
+            repeat += 1
+        raw.append(("loop", sequence[i:i + period], repeat))
+        i += period * repeat
+    blocks: list[dict[str, Any]] = []
+    run: list[str] = []
+    for item in raw:
+        if item[0] == "single":
+            run.append(item[1])
+            continue
+        if run:
+            blocks.append({"kind": "straight", "body": run, "repeat": 1, "ops": len(run)})
+            run = []
+        blocks.append({"kind": "loop", "body": item[1], "repeat": item[2],
+                       "ops": len(item[1]) * item[2]})
+    if run:
+        blocks.append({"kind": "straight", "body": run, "repeat": 1, "ops": len(run)})
+    return blocks
+
+
+def build_program_trace(
+    events: list[dict[str, Any]],
+    focus_event: dict[str, Any] | None,
+    opcode_table: list[dict[str, Any]],
+    *,
+    window_us: int,
+    script_registry: ScriptRegistry | None = None,
+    limit: int = 40,
+) -> dict[str, Any]:
+    """The devirtualized program: the executed opcode trace rolled back into loops.
+    Where `opcode_table` is the handler inventory and `program_sketch` is the hot
+    transitions, this is the listing -- what ran, in order, with the repeated
+    rounds collapsed to `body x repeat`. Site-neutral: it reads only opcode labels.
+    Blocks are ranked for reporting by ops covered; `blocks` is a bounded view of
+    `blocks_total`, so the listing is a summary of the program, not all of it."""
+    sequence = opcode_label_sequence(
+        events, focus_event, opcode_table,
+        window_us=window_us, script_registry=script_registry)
+    truncated = len(sequence) > PROGRAM_MAX_OPS
+    if truncated:
+        sequence = sequence[:PROGRAM_MAX_OPS]
+    if not sequence:
+        return {"ops_total": 0, "blocks_total": 0, "distinct_opcodes": 0,
+                "truncated": False, "blocks": []}
+    blocks = roll_loops(sequence)
+    ranked = sorted(blocks, key=lambda b: b["ops"], reverse=True)[:limit]
+    return {
+        "ops_total": len(sequence),
+        "blocks_total": len(blocks),
+        "distinct_opcodes": len(set(sequence)),
+        "truncated": truncated,
+        "loop_ops": sum(b["ops"] for b in blocks if b["kind"] == "loop"),
+        "blocks": ranked,
+    }
+
+
 def first_marker_event(
     events: list[dict[str, Any]],
     marker_params: Iterable[str],
@@ -1787,6 +2047,28 @@ def summarize(
             ),
             "marker_adjacent_timeline": marker_adjacent_timeline,
         })
+        opcode_table = build_opcode_table(
+            events,
+            vmp_focus_event,
+            window_us=timeline_window_us,
+            script_registry=script_registry,
+            snippets=source_analysis["source_snippets"],
+        )
+        summary["opcode_table"] = opcode_table
+        summary["program_sketch"] = build_program_sketch(
+            events,
+            vmp_focus_event,
+            opcode_table,
+            window_us=timeline_window_us,
+            script_registry=script_registry,
+        )
+        summary["program_trace"] = build_program_trace(
+            events,
+            vmp_focus_event,
+            opcode_table,
+            window_us=timeline_window_us,
+            script_registry=script_registry,
+        )
     return summary
 
 
@@ -1854,6 +2136,40 @@ def print_summary(summary: dict[str, Any], trace: Path) -> None:
                 f"score={focus.get('window_score')} "
                 f"window_events={focus.get('window_vmp_event_count')}"
             )
+        opcode_table = summary.get("opcode_table", [])
+        if opcode_table:
+            print(f"Opcode table (general devirt, {len(opcode_table)} handlers):")
+            for row in opcode_table[:12]:
+                site = row["site"]
+                where = f"{site.get('function') or '?'}@{site.get('column')}"
+                consts = ",".join(str(c["value"]) for c in row["constants"][:4])
+                print(
+                    f"  op{row['opcode']:<2} {row['shape']:<13} {row['role']:<22}"
+                    f" x{row['count']:<6} {where}"
+                    + (f"  consts[{consts}]" if consts else "")
+                )
+        sketch = summary.get("program_sketch", [])
+        if sketch:
+            print("Program sketch (hot opcode transitions):")
+            for edge in sketch[:8]:
+                print(f"  {edge['from']} -> {edge['to']}  x{edge['count']}")
+        trace = summary.get("program_trace") or {}
+        if trace.get("blocks"):
+            print(
+                f"Program trace (devirtualized listing): {trace['ops_total']} ops"
+                f" -> {trace['blocks_total']} blocks,"
+                f" {trace['distinct_opcodes']} distinct opcodes,"
+                f" {trace['loop_ops']} ops in loops"
+                + (" [truncated]" if trace.get("truncated") else "")
+            )
+            for block in trace["blocks"][:10]:
+                body = " ".join(block["body"][:4])
+                if len(block["body"]) > 4:
+                    body += " ..."
+                if block["kind"] == "loop":
+                    print(f"  [{body}] x{block['repeat']:<7} ({block['ops']} ops)")
+                else:
+                    print(f"  {body:<40} (straight, {block['ops']} ops)")
     else:
         print(f"Target marker occurrences: {summary['marker_occurrence_count']}")
         print(f"Signed URLs observed: {summary['signed_url_count']}")

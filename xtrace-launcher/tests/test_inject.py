@@ -36,6 +36,19 @@ class PreambleTests(unittest.TestCase):
         self.assertIn("SCAN_DELAY_MS", inject.PREAMBLE)
         self.assertIn("queueMicrotask", inject.PREAMBLE)
 
+    def test_scan_hook_stays_armed_across_back_to_back_scans(self):
+        # Regression: a signer parses the body THEN the canonical preimage in ONE
+        # sync turn. The hook must NOT disarm globally after the first scan (which
+        # would drop the canonical -- the exact JD hash-input miss). Disarm is now
+        # gated behind a high length threshold (pathological strings only).
+        p = inject.PREAMBLE
+        self.assertIn("SCAN_FASTPATH", p)
+        self.assertIn("(i | 0) === 0 && !_busy", p)          # armed + re-entrancy safe
+        # the only disarm is guarded by the fast-path length threshold
+        disarm = "String.prototype.charCodeAt = orig;"
+        idx = p.index(disarm)
+        self.assertIn("len >= SCAN_FASTPATH", p[max(0, idx - 200):idx])
+
     def test_build_preamble_templates_scan_delay_and_cap(self):
         self.assertIn("SCAN_DELAY_MS = 1234;", inject.build_preamble(1234))
         self.assertIn("SCAN_CAP = 9999,", inject.build_preamble(scan_cap=9999))

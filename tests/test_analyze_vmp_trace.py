@@ -16,6 +16,7 @@ from scripts.analyze_vmp_trace import (
     load_events,
     main,
     resolve_dispatch_callsite,
+    roll_loops,
     sha1_ref,
     stack_top,
     summarize as analyze_summarize,
@@ -1035,6 +1036,89 @@ class AnalyzeVmpTraceTests(unittest.TestCase):
         self.assertEqual(summary["vmp_focus_event"]["event"]["seq"], 103)
         self.assertEqual(summary["vmp_focus_event"]["window_vmp_event_count"], 4)
         self.assertGreater(summary["vmp_focus_event"]["window_score"], 10)
+
+    def test_generic_vmp_opcode_table_labels_handlers_generically(self):
+        # Two handler sites: a rotate+xor mixer and a dispatcher. The general
+        # opcode table must label them from op-shape alone (no VM/site knowledge).
+        def handler(api, seq, fn, col, **ops):
+            args = {"callsite_script": "https://cdn.test/vm.js",
+                    "callsite_function": fn, "callsite_column": col}
+            args.update(ops)
+            return event(api, seq, args)
+
+        events = []
+        seq = 100
+        for _ in range(4):                                   # site A: (x<<a)|(x>>>b) ^ k
+            events.append(handler("Shift.left", seq, "Qh", 100, left=7, right=13, shift=13)); seq += 1
+            events.append(handler("Shift.unsignedRight", seq, "Qh", 100, left=7, right=19, shift=19)); seq += 1
+            events.append(handler("Bitwise.or", seq, "Qh", 100, left=3, right=4)); seq += 1
+            events.append(handler("Bitwise.xor", seq, "Qh", 100, left=3, right=255)); seq += 1
+        for _ in range(3):                                   # site B: the dispatcher
+            events.append(handler("Function.prototype.call", seq, "disp", 200,
+                                  target_type="function")); seq += 1
+
+        summary = summarize(events, profile=PROFILE_GENERIC_VMP, timeline_window_us=100000)
+        table = summary["opcode_table"]
+        by_fn = {row["site"]["function"]: row for row in table}
+        self.assertIn("Qh", by_fn)
+        self.assertIn("disp", by_fn)
+        self.assertEqual(by_fn["Qh"]["shape"], "ARX_MIX")        # rotate+xor, from op-shape
+        self.assertEqual(by_fn["disp"]["shape"], "DISPATCH")     # call dominates
+        # constants (shift amounts / mask) surfaced from the observed operands
+        self.assertTrue({255, 13, 19} & {c["value"] for c in by_fn["Qh"]["constants"]})
+        # program sketch labels each op by its opcode and counts transitions
+        self.assertTrue(summary["program_sketch"])
+        self.assertTrue(all({"from", "to", "count"} <= edge.keys()
+                            for edge in summary["program_sketch"]))
+
+    def test_roll_loops_recovers_the_shortest_repeating_period(self):
+        # The loop roller is what turns a linear op trace into a program, so its
+        # period choice IS the claim: report the round's true period, not a multiple.
+        self.assertEqual(roll_loops(["a"] * 5),
+                         [{"kind": "loop", "body": ["a"], "repeat": 5, "ops": 5}])
+        self.assertEqual(roll_loops(["a", "b", "c"] * 4),
+                         [{"kind": "loop", "body": ["a", "b", "c"],
+                           "repeat": 4, "ops": 12}])
+        # straight-line stretches merge into one block; loops keep their boundaries
+        rolled = roll_loops(["x", "a", "a", "a", "y", "z"])
+        self.assertEqual([b["kind"] for b in rolled], ["straight", "loop", "straight"])
+        self.assertEqual(rolled[0]["body"], ["x"])
+        self.assertEqual((rolled[1]["body"], rolled[1]["repeat"]), (["a"], 3))
+        self.assertEqual(rolled[2]["body"], ["y", "z"])
+        # nothing repeats -> one straight block, no invented loop
+        self.assertEqual(roll_loops(["a", "b"]),
+                         [{"kind": "straight", "body": ["a", "b"], "repeat": 1, "ops": 2}])
+        self.assertEqual(roll_loops([]), [])
+
+    def test_generic_vmp_program_trace_rolls_the_dispatch_round_into_a_loop(self):
+        # The devirt listing: an unrolled execution trace must come back as the
+        # VM's round (body x repeat), recovered from opcode labels alone.
+        def handler(api, seq, fn, col, **ops):
+            args = {"callsite_script": "https://cdn.test/vm.js",
+                    "callsite_function": fn, "callsite_column": col}
+            args.update(ops)
+            return event(api, seq, args)
+
+        events = []
+        seq = 100
+        for _ in range(6):                    # one VM round: dispatch -> mix -> load
+            events.append(handler("Function.prototype.call", seq, "disp", 10,
+                                  target_type="function")); seq += 1
+            events.append(handler("Bitwise.xor", seq, "mix", 20, left=3, right=255)); seq += 1
+            events.append(handler("DataView.getUint8", seq, "load", 30,
+                                  byte_offset=0, result=7)); seq += 1
+
+        summary = summarize(events, profile=PROFILE_GENERIC_VMP, timeline_window_us=100000)
+        trace = summary["program_trace"]
+        self.assertEqual(trace["ops_total"], 18)
+        self.assertEqual(trace["distinct_opcodes"], 3)   # three handler sites
+        loops = [b for b in trace["blocks"] if b["kind"] == "loop"]
+        self.assertEqual(len(loops), 1)
+        self.assertEqual(loops[0]["repeat"], 6)          # the round ran 6x
+        self.assertEqual(len(loops[0]["body"]), 3)       # ... with a 3-opcode body
+        self.assertEqual(loops[0]["ops"], 18)
+        self.assertEqual(trace["loop_ops"], 18)
+        self.assertFalse(trace["truncated"])
 
     def test_generic_vmp_focus_window_is_session_consistent(self):
         events = [

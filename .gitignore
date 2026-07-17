@@ -2,6 +2,9 @@ chromium/
 depot_tools/
 logs/
 profiles/
+# Per-run analysis output: carries captured session material from real targets
+# (tokens, salts, signer source). Reports stay on the workstation.
+analysis/
 # Local-only stress harnesses / notes (not part of the open-source package)
 local/
 *.log

@@ -209,6 +209,62 @@ class SignPipelineTests(unittest.TestCase):
                          ("sha256", "hex_lower", "exact"))
         self.assertEqual(d0["input_api"], "String.scan")
 
+    def test_replay_resolves_a_js_implemented_hash_from_native_material_alone(self):
+        # A JS-implemented hash (CryptoJS-style) never reaches crypto.subtle: it
+        # reads its message char-by-char, so the preimage is exposed by the NATIVE
+        # String.prototype.charCodeAt hook, which carries the whole subject on
+        # every call. That material must reach the candidate pool -- otherwise the
+        # oracle cannot see the one string that proves the field. No inject layer
+        # here on purpose: this is the patch-free-hooks-OFF path.
+        # synthetic, but shaped like a real salt-sandwich canonical string
+        # (salt | k:v params | salt) so the fixture documents that structure.
+        salt = "cafebabe" * 4
+        plain = f"{salt}appid:demo&client=pc&t=1700000000000{salt}"
+        digest = hashlib.sha256(plain.encode()).hexdigest()
+        T = 1_000_000_000.0
+        lines, prev = [], None
+        for i in range(12):
+            rr = f"number:{1000 + i}.000000"
+            lines.append({"api": "Bitwise.xor", "category": "reverse",
+                          "mono_time_us": T - 100000 + i * 5000, "global_seq": i + 1,
+                          "args": [{"callsite_script": SIGNER, "callsite_function": "h",
+                                    "callsite_column": 4200 + i, "left": 7.0, "right": float(i),
+                                    "result": float(1000 + i),
+                                    "left_ref": prev or "number:7.000000",
+                                    "right_ref": f"number:{i}.000000", "result_ref": rr}]})
+            prev = rr
+        # the Utf8.parse burst: one native event per character, each repeating the
+        # full subject -- the timeline must collapse these into a single candidate.
+        for pos in range(len(plain)):
+            lines.append({"api": "String.prototype.charCodeAt", "category": "reverse",
+                          "mono_time_us": T - 55000 + pos, "global_seq": 200 + pos,
+                          "args": [{"callsite_script": SIGNER, "callsite_function": "parse",
+                                    "callsite_column": 90, "subject": plain,
+                                    "subject_length": len(plain), "position": float(pos),
+                                    "result": float(ord(plain[pos])),
+                                    "result_ref": f"number:{ord(plain[pos])}.000000"}]})
+        body = json.dumps({"header": {"aid": 123}, "sign": digest}).encode().hex()
+        lines.append({"api": "BrowserNetwork.request", "category": "network", "mono_time_us": T,
+                      "global_seq": 999, "args": [{"method": "POST", "headers": [],
+                      "has_request_body": True, "url": "https://api.example.com/submit?ts=1",
+                      "upload_body": {"body_hex": body}}]})
+        self.trace.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+        out = self.tmp / "out"
+        self.assertEqual(sp.main(["explain", "--trace", str(self.trace), "--out", str(out),
+                                  "--carrier", "body.sign"]), 0)
+        # the per-char repeats collapse to ONE candidate carrying the full preimage
+        ci = json.loads((out / "sign_artifact.json").read_text())["candidate_inputs"]
+        native = [c for c in ci if c.get("api") == "String.prototype.charCodeAt"]
+        self.assertEqual([c["value"] for c in native], [plain])
+        # and the oracle proves the field off that native material alone
+        self.assertEqual(sp.main(["replay", str(out)]), 0)
+        rep = json.loads((out / "replay.json").read_text())
+        self.assertEqual(rep["summary"]["resolution_rate"], 1.0)
+        d0 = rep["fields"][0]["derivations"][0]
+        self.assertEqual((d0["algo"], d0["encoding"], d0["match_kind"]),
+                         ("sha256", "hex_lower", "exact"))
+        self.assertEqual(d0["input_api"], "String.prototype.charCodeAt")
+
     def test_replay_oracle_units_edge_encoding_and_unresolved(self):
         plain = "abcdefghijklmnop-0123456789"
         art = {
@@ -288,6 +344,187 @@ class SignPipelineTests(unittest.TestCase):
         self.assertEqual(hd["key_value_sha"], "k")
         self.assertEqual(hd["input_value_sha"], "m")
         self.assertIn("hmac", rep["algorithms_tried"])
+
+    def test_replay_oracle_mines_hmac_operands_from_a_json_envelope(self):
+        # gap 2: a signer wraps key + message inside ONE JSON.stringify value
+        # (a {key, signStr, ...} envelope); the HMAC operands must be mined out of it.
+        import hmac as _hmac
+        key = "device-secret-key-abcdef012345"
+        msg = "appid=www&functionId=f&body={x}&t=1783000000"
+        mac = _hmac.new(key.encode(), msg.encode(), "sha256").hexdigest()
+        envelope = json.dumps({"key": key, "signStr": mac, "msg": msg, "_ste": 3})
+        art = {
+            "anchor": {"carrier": "sig"},
+            "candidate_inputs": [
+                {"api": "JSON.stringify", "d_ms": -30, "value_sha": "env", "value": envelope},
+            ],
+            "candidate_outputs": [],
+            "fields": [{"field": "sig.f8", "evidence": "context_only", "output_value": mac}],
+        }
+        rep = sp.replay_oracle(art)
+        # 3 string leaves (key, signStr, msg) mined out of the single envelope
+        self.assertGreaterEqual(rep["json_leaf_operands_mined"], 3)
+        f = rep["fields"][0]
+        self.assertTrue(f["resolved"])
+        hd = next(d for d in f["derivations"] if d["structure"] == "HMAC(key, msg)")
+        self.assertIn("HMAC_sha256(key, msg)", hd["spec"])
+        # operands carry the json_path they were mined from (provenance)
+        self.assertEqual(hd["key_json_path"], "key")
+        self.assertEqual(hd["input_json_path"], "msg")
+        self.assertEqual(hd["key_json_leaf_of"], "env")
+
+    @unittest.skipUnless("sm3" in sp.REPLAY_HASHES, "platform hashlib lacks SM3")
+    def test_replay_oracle_resolves_sm3_and_hmac_sm3(self):
+        # SM3 (国密) is a real-world signer digest; both plain SM3 and HMAC-SM3 must
+        # resolve, the latter over operands mined from a nested JSON envelope.
+        import hmac as _hmac
+        key = "b129d28b20d8f75779ac168551a15eba63fec9ce12b90cd0acc12025b3a19370"
+        msg = "appid=www-jd-com&functionId=jsfbox_pre_gb&t=1784214612610"
+        f_sm3 = hashlib.new("sm3", msg.encode()).hexdigest()
+        f_hmac = _hmac.new(key.encode(), msg.encode(), "sm3").hexdigest()
+        envelope = json.dumps({"key": key, "signStr": f_hmac, "msg": msg})
+        art = {
+            "anchor": {"carrier": "sig"},
+            "candidate_inputs": [
+                {"api": "JSON.stringify", "d_ms": -30, "value_sha": "env", "value": envelope},
+            ],
+            "candidate_outputs": [],
+            "fields": [
+                {"field": "sig.f4", "evidence": "context_only", "output_value": f_sm3},
+                {"field": "sig.f8", "evidence": "context_only", "output_value": f_hmac},
+            ],
+        }
+        rep = sp.replay_oracle(art)
+        self.assertEqual(rep["summary"]["resolution_rate"], 1.0)
+        by = {f["field"]: f for f in rep["fields"]}
+        self.assertIn("sm3(input)", by["sig.f4"]["derivations"][0]["spec"])
+        self.assertTrue(any("HMAC_sm3(key, msg)" in d["spec"]
+                            for d in by["sig.f8"]["derivations"]))
+
+    def test_sm4_matches_official_test_vector(self):
+        # GB/T 32907 worked example: single-block ECB
+        key = bytes.fromhex("0123456789abcdeffedcba9876543210")
+        pt = bytes.fromhex("0123456789abcdeffedcba9876543210")
+        self.assertEqual(sp._sm4_encrypt(key, pt).hex(),
+                         "681edf34d206965e86b3e94f536e4246")
+
+    def test_replay_oracle_resolves_sm4_cipher_field_from_json_envelope(self):
+        # gap "所有国密": a 国密 SM4-encrypted carrier field, key + plaintext nested
+        # in one JSON.stringify, must be VERIFIED (re-encrypt observed -> match).
+        key = "0123456789abcdef"                      # 16-byte ASCII SM4 key
+        plaintext = '{"source":"pc_home","adId":"04079308"}'
+        pad = 16 - (len(plaintext) % 16)
+        ct = sp._sm4_encrypt(key.encode(), plaintext.encode() + bytes([pad]) * pad)
+        field = base64.b64encode(ct).decode()
+        envelope = json.dumps({"key": key, "payload": plaintext})
+        art = {
+            "anchor": {"carrier": "sig"},
+            "candidate_inputs": [
+                {"api": "JSON.stringify", "d_ms": -30, "value_sha": "env", "value": envelope},
+            ],
+            "candidate_outputs": [],
+            "fields": [{"field": "sig.f7", "evidence": "context_only", "output_value": field}],
+        }
+        rep = sp.replay_oracle(art)
+        self.assertIn("sm4", rep["algorithms_tried"])
+        f = rep["fields"][0]
+        self.assertTrue(f["resolved"])
+        d = next(d for d in f["derivations"] if d["structure"] == "SM4(key, msg)")
+        self.assertIn("SM4-ECB(key, msg)", d["spec"])
+        self.assertEqual(d["key_json_path"], "key")
+        self.assertEqual(d["input_json_path"], "payload")
+
+    def test_sm4_cbc_zero_iv_roundtrip_resolves(self):
+        key = "fedcba9876543210"
+        msg = "0123456789abcdef" * 2               # 32 bytes, block-aligned (nopad path)
+        ct = sp._sm4_encrypt(key.encode(), msg.encode(), iv=b"\x00" * 16)
+        art = {
+            "anchor": {"carrier": "t"},
+            "candidate_inputs": [
+                {"api": "s", "d_ms": -3, "value_sha": "k", "value": key},
+                {"api": "s", "d_ms": -2, "value_sha": "m", "value": msg},
+            ],
+            "candidate_outputs": [],
+            "fields": [{"field": "c", "evidence": "unpaired", "output_value": ct.hex()}],
+        }
+        rep = sp.replay_oracle(art)
+        f = rep["fields"][0]
+        self.assertTrue(f["resolved"])
+        self.assertTrue(any("SM4-CBC(key, msg)" in d["spec"] for d in f["derivations"]))
+
+    def test_aes_matches_fips197_vectors(self):
+        pt = bytes.fromhex("00112233445566778899aabbccddeeff")
+        for key_hex, ct_hex in (
+            ("000102030405060708090a0b0c0d0e0f", "69c4e0d86a7b0430d8cdb78070b4c55a"),
+            ("000102030405060708090a0b0c0d0e0f1011121314151617",
+             "dda97ca4864cdfe06eaf70a0ec0d7191"),
+            ("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+             "8ea2b7ca516745bfeafc49904b496089"),
+        ):
+            self.assertEqual(sp._aes_encrypt(bytes.fromhex(key_hex), pt).hex(), ct_hex)
+
+    def test_replay_oracle_resolves_aes_cbc_field_from_json_envelope(self):
+        key = "0123456789abcdef0123456789abcdef"      # 32-hex -> AES-128
+        plaintext = '{"functionId":"jsfbox_pre_gb","body":{"source":"pc_home"}}'
+        pad = 16 - (len(plaintext) % 16)
+        ct = sp._aes_encrypt(bytes.fromhex(key),
+                             plaintext.encode() + bytes([pad]) * pad, iv=b"\x00" * 16)
+        field = base64.b64encode(ct).decode()
+        envelope = json.dumps({"key": key, "payload": plaintext})
+        art = {
+            "anchor": {"carrier": "sig"},
+            "candidate_inputs": [
+                {"api": "JSON.stringify", "d_ms": -30, "value_sha": "env", "value": envelope},
+            ],
+            "candidate_outputs": [],
+            "fields": [{"field": "sig.f7", "evidence": "context_only", "output_value": field}],
+        }
+        rep = sp.replay_oracle(art)
+        self.assertIn("aes", rep["algorithms_tried"])
+        f = rep["fields"][0]
+        self.assertTrue(f["resolved"])
+        d = next(d for d in f["derivations"] if d["structure"] == "AES(key, msg)")
+        self.assertIn("AES-CBC(key, msg)", d["spec"])
+        self.assertEqual(d["input_json_path"], "payload")
+
+    def test_explain_auto_anchor_selects_window_with_material(self):
+        # gap 4: --anchor-select material picks the request whose pre-window holds
+        # injected plaintext, not just the first carrier request.
+        T = 1_000_000_000.0
+        gap = 1_000_000.0                      # 1s between the two signed requests
+
+        def op(mono, gs):
+            return {"api": "Bitwise.xor", "category": "reverse", "mono_time_us": mono,
+                    "global_seq": gs, "args": [{"callsite_script": SIGNER,
+                    "callsite_function": "h", "left": 1.0, "right": 2.0, "result": 3.0,
+                    "left_ref": "number:1.0", "right_ref": "number:2.0",
+                    "result_ref": f"number:{gs}"}]}
+
+        def req(mono, gs, tok):
+            return {"api": "BrowserNetwork.request", "category": "network",
+                    "mono_time_us": mono, "global_seq": gs, "args": [{"method": "GET",
+                    "headers": [], "url": f"https://api.example.com/s?ts=1&X-Sig={tok}"}]}
+
+        lines = [
+            op(T - 40000, 1), req(T, 2, TOKEN),                       # index 0: no material
+            op(T + gap - 40000, 3),                                   # index 1: has material
+            {"api": "String.scan", "category": "inject", "mono_time_us": T + gap - 50000,
+             "global_seq": 4, "callsite_script": SIGNER, "callsite_function": "s",
+             "args": [{"type": "string", "len": 40,
+                       "value": "MATERIAL-PLAINTEXT-abcdefghijklmnopqrst"}]},
+            req(T + gap, 5, TOKEN + "ZZ"),
+        ]
+        self.trace.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+        out = self.tmp / "out"
+        rc = sp.main(["explain", "--trace", str(self.trace), "--out", str(out),
+                      "--carrier", "X-Sig", "--window-ms", "300", "--anchor-select", "material"])
+        self.assertEqual(rc, 0)
+        summary = json.loads((out / "summary.json").read_text())
+        self.assertEqual(summary["anchor"]["index"], 1)          # picked the material window
+        # and the material landed in the candidate pool
+        art = json.loads((out / "sign_artifact.json").read_text())
+        self.assertTrue(any("MATERIAL-PLAINTEXT" in (c.get("value") or "")
+                            for c in art["candidate_inputs"]))
 
     def test_export_algo_spec_statuses_and_render(self):
         plain = "abcdefghijklmnop-0123456789"
