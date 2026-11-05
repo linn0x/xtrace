@@ -35,6 +35,61 @@ def default_validator_script() -> Path:
     return Path(__file__).resolve().parents[2] / "scripts" / "validate_trace.py"
 
 
+def _with_bytecode_category(categories: str) -> str:
+    tokens = [part.strip() for part in categories.split(",") if part.strip()]
+    if any(token in {"all", "bytecode"} for token in tokens):
+        return categories
+    if not categories:
+        return "bytecode"
+    separator = "" if categories.endswith(",") else ","
+    return f"{categories}{separator}bytecode"
+
+
+def _bytecode_js_flags(
+    *,
+    scripts: str,
+    functions: str,
+    opcodes: str,
+    opcode_deny: str,
+    sample: int,
+    budget: int,
+    max_chars: int,
+    values: str,
+) -> str:
+    parts = [
+        "--xtrace-bytecode",
+        f"--xtrace-bytecode-sample={sample}",
+        f"--xtrace-bytecode-budget={budget}",
+        f"--xtrace-bytecode-max-chars={max_chars}",
+        f"--xtrace-bytecode-values={values}",
+    ]
+    if scripts:
+        parts.append(f"--xtrace-bytecode-scripts={scripts}")
+    if functions:
+        parts.append(f"--xtrace-bytecode-functions={functions}")
+    if opcodes:
+        parts.append(f"--xtrace-bytecode-opcodes={opcodes}")
+    if opcode_deny:
+        parts.append(f"--xtrace-bytecode-opcode-deny={opcode_deny}")
+    return " ".join(parts)
+
+
+def _merge_js_flags(extra_args: Iterable[str], bytecode_flags: str | None) -> list[str]:
+    extra = list(extra_args)
+    if not bytecode_flags:
+        return extra
+    kept: list[str] = []
+    existing: list[str] = []
+    for arg in extra:
+        if arg.startswith("--js-flags="):
+            existing.append(arg.split("=", 1)[1])
+        else:
+            kept.append(arg)
+    combined = " ".join(part for part in (*existing, bytecode_flags) if part)
+    kept.append(f"--js-flags={combined}")
+    return kept
+
+
 def build_chromium_command(
     *,
     chromium: Path,
@@ -51,6 +106,15 @@ def build_chromium_command(
     capture_response_body: bool = False,
     remote_debugging_port: int = 0,
     user_data_dir: Path | None = None,
+    bytecode: bool = False,
+    bytecode_scripts: str = "",
+    bytecode_functions: str = "",
+    bytecode_opcodes: str = "",
+    bytecode_opcode_deny: str = "",
+    bytecode_sample: int = 1,
+    bytecode_budget: int = 100000,
+    bytecode_max_chars: int = 512,
+    bytecode_values: str | None = None,
 ) -> tuple[list[str], dict[str, str], Path, Path]:
     # Chromium's browser process resolves --xtrace-file against its own cwd /
     # sandbox view. Relative log dirs often produce FILE_ERROR_ACCESS_DENIED.
@@ -69,6 +133,20 @@ def build_chromium_command(
     profile_path.mkdir(parents=True, exist_ok=True)
 
     executable = resolve_chromium_executable(chromium)
+    if bytecode:
+        categories = _with_bytecode_category(categories)
+    bytecode_flags = None
+    if bytecode:
+        bytecode_flags = _bytecode_js_flags(
+            scripts=bytecode_scripts,
+            functions=bytecode_functions,
+            opcodes=bytecode_opcodes,
+            opcode_deny=bytecode_opcode_deny,
+            sample=bytecode_sample,
+            budget=bytecode_budget,
+            max_chars=bytecode_max_chars,
+            values=bytecode_values or capture_values,
+        )
     command = [
         os.fspath(executable),
         "--xtrace-enable",
@@ -80,7 +158,7 @@ def build_chromium_command(
         f"--user-data-dir={profile_path}",
         "--no-first-run",
         "--no-default-browser-check",
-        *list(extra_args),
+        *_merge_js_flags(extra_args, bytecode_flags),
         url,
     ]
     insert_at = 6
@@ -108,6 +186,8 @@ def build_chromium_command(
     env["XTRACE_CAPTURE_VALUES"] = capture_values
     env["XTRACE_CAPTURE_ASSETS"] = capture_assets
     env["XTRACE_CAUSALITY"] = causality
+    if bytecode:
+        env["XTRACE_BYTECODE"] = "1"
     env["XTRACE_CAPTURE_RESPONSE_BODY"] = "1" if capture_response_body else "0"
     if max_body_bytes > 0:
         env["XTRACE_MAX_BODY_BYTES"] = str(max_body_bytes)
@@ -224,6 +304,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                           "crypto.subtle/TextEncoder/JSON boundary I/O (raise if pairing.json shows truncation)")
     run.add_argument("--user-data-dir", type=Path, default=None,
                      help="reuse a fixed Chromium profile dir (warm session) instead of a fresh one")
+    run.add_argument(
+        "--xtrace-bytecode",
+        action="store_true",
+        default=False,
+        help="record Ignition bytecode steps (category bytecode, API Ignition.step); off by default",
+    )
+    run.add_argument("--xtrace-bytecode-scripts", default="", help="comma-separated script URL substrings")
+    run.add_argument("--xtrace-bytecode-functions", default="", help="comma-separated function name substrings")
+    run.add_argument("--xtrace-bytecode-opcodes", default="", help="comma-separated exact Ignition opcode allow-list")
+    run.add_argument("--xtrace-bytecode-opcode-deny", default="", help="comma-separated exact Ignition opcode deny-list")
+    run.add_argument("--xtrace-bytecode-sample", type=int, default=1, help="emit 1 of every N matching steps")
+    run.add_argument("--xtrace-bytecode-budget", type=int, default=100000, help="emitted step cap; 0 is unlimited")
+    run.add_argument("--xtrace-bytecode-max-chars", type=int, default=512, help="full-mode string cap before truncation metadata")
+    run.add_argument(
+        "--xtrace-bytecode-values",
+        choices=["full", "summary", "args-only"],
+        default=None,
+        help="bytecode value capture; default follows --xtrace-capture-values",
+    )
     run.add_argument("--extra-arg", action="append", default=[], help="extra Chromium argument; may be repeated")
     run.add_argument(
         "--capture-seconds",
@@ -294,6 +393,25 @@ def main(argv: list[str] | None = None) -> int:
         if args.xtrace_max_header_value_bytes < 0:
             print("--xtrace-max-header-value-bytes must be greater than or equal to 0", file=sys.stderr)
             return 2
+        if args.xtrace_bytecode:
+            if args.xtrace_bytecode_sample < 1:
+                print("--xtrace-bytecode-sample must be greater than or equal to 1", file=sys.stderr)
+                return 2
+            if args.xtrace_bytecode_budget < 0:
+                print("--xtrace-bytecode-budget must be greater than or equal to 0", file=sys.stderr)
+                return 2
+            if args.xtrace_bytecode_max_chars < 1:
+                print("--xtrace-bytecode-max-chars must be greater than or equal to 1", file=sys.stderr)
+                return 2
+            for label, value in (
+                ("--xtrace-bytecode-scripts", args.xtrace_bytecode_scripts),
+                ("--xtrace-bytecode-functions", args.xtrace_bytecode_functions),
+                ("--xtrace-bytecode-opcodes", args.xtrace_bytecode_opcodes),
+                ("--xtrace-bytecode-opcode-deny", args.xtrace_bytecode_opcode_deny),
+            ):
+                if any(character.isspace() for character in value):
+                    print(f"{label} cannot contain whitespace", file=sys.stderr)
+                    return 2
         executable = resolve_chromium_executable(args.chromium)
         if not (executable.exists() and executable.is_file() and os.access(executable, os.X_OK)):
             print(f"Chromium executable not found or not executable: {executable}", file=sys.stderr)
@@ -314,6 +432,15 @@ def main(argv: list[str] | None = None) -> int:
             capture_response_body=args.xtrace_capture_response_body,
             remote_debugging_port=inject_port,
             user_data_dir=args.user_data_dir,
+            bytecode=args.xtrace_bytecode,
+            bytecode_scripts=args.xtrace_bytecode_scripts,
+            bytecode_functions=args.xtrace_bytecode_functions,
+            bytecode_opcodes=args.xtrace_bytecode_opcodes,
+            bytecode_opcode_deny=args.xtrace_bytecode_opcode_deny,
+            bytecode_sample=args.xtrace_bytecode_sample,
+            bytecode_budget=args.xtrace_bytecode_budget,
+            bytecode_max_chars=args.xtrace_bytecode_max_chars,
+            bytecode_values=args.xtrace_bytecode_values,
         )
         print(f"XTrace log: {log_path}")
         print(f"XTrace profile: {profile_path}")

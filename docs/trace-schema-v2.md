@@ -18,7 +18,9 @@ Every record in a v2 trace has these additional fields:
 one `call`, followed by exactly one `return` or `exception` sharing the same
 `call_id`. Existing Blink and V8 runtime records are singleton children of the
 active script activation; records emitted without an activation are singleton
-roots. A renderer RAII scope keeps activation state balanced on early returns.
+roots. Opt-in `Ignition.step` bytecode records are singletons on that same
+stack (`causality_kind: "singleton"`, `duration_us: null`); they do not open
+their own paired activation. See [`trace-schema-bytecode.md`](trace-schema-bytecode.md). A renderer RAII scope keeps activation state balanced on early returns.
 
 Browser-network and CDP-injected records remain producer-local observations.
 In schema v2 they use `causality_kind: "external"`, `call_id: null`,

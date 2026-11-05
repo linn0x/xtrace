@@ -1,0 +1,107 @@
+diff --git a/third_party/blink/renderer/bindings/core/v8/v8_initializer.cc b/third_party/blink/renderer/bindings/core/v8/v8_initializer.cc
+--- a/third_party/blink/renderer/bindings/core/v8/v8_initializer.cc
++++ b/third_party/blink/renderer/bindings/core/v8/v8_initializer.cc
+@@ -250,6 +250,29 @@
+     return;
+   }
+ 
++  constexpr std::string_view kBytecodePrefix = "xtrace:bytecode:";
++  if (event.starts_with(kBytecodePrefix)) {
++    event.remove_prefix(kBytecodePrefix.size());
++    size_t api_end = event.find('\n');
++    if (api_end == std::string_view::npos || api_end == 0) {
++      return;
++    }
++    std::string api(event.substr(0, api_end));
++    event.remove_prefix(api_end + 1);
++    size_t args_end = event.find('\n');
++    std::string_view args_view = event;
++    std::string_view trunc_view;
++    if (args_end != std::string_view::npos) {
++      args_view = event.substr(0, args_end);
++      trunc_view = event.substr(args_end + 1);
++    }
++    XTraceLogger::LogEventNoStackWithTruncation(
++        "bytecode", "call", api.c_str(),
++        String::FromUtf8WithLatin1Fallback(args_view),
++        String::FromUtf8WithLatin1Fallback(trunc_view));
++    return;
++  }
++
+   constexpr std::string_view kPrefix = "xtrace:dynamic-code:";
+   if (!event.starts_with(kPrefix)) {
+     return;
+diff --git a/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc b/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
+--- a/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
++++ b/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
+@@ -450,6 +450,7 @@
+                           bool capture_stack,
+                           std::string_view frame_url,
+                           std::string_view origin,
+-                          const CausalityFields* causal_fields = nullptr) {
++                          const CausalityFields* causal_fields = nullptr,
++                          std::string_view truncation_json = {}) {
+   const int64_t wall_time_us =
+       (base::Time::Now() - base::Time::UnixEpoch()).InMicroseconds();
+@@ -500,12 +500,17 @@
+   line.append(",\"error\":null");
+-  line.append(",\"truncated\":false");
++  const bool truncated = !truncation_json.empty();
++  line.append(truncated ? ",\"truncated\":true" : ",\"truncated\":false");
+   if (CausalitySyncEnabled(config)) {
+     CausalityFields fields = causal_fields
+                                  ? *causal_fields
+                                  : CurrentCausalityFields(config, phase, api,
+                                                           mono_time_us);
+     AppendCausalityFields(&line, config, fields);
+   }
++  if (truncated) {
++    line.append(",\"truncation\":");
++    line.append(truncation_json);
++  }
+   if (!extra_fields.empty()) {
+     line.append(",");
+     line.append(extra_fields);
+@@ -740,6 +740,25 @@
+                        std::string_view());
+ }
+ 
++void XTraceLogger::LogEventNoStackWithTruncation(
++    const char* category,
++    const char* phase,
++    const char* api,
++    const String& args_json,
++    const String& truncation_json) {
++  const XTraceConfig& config = GetCachedConfig();
++  if (!CategoryEnabled(config, category)) {
++    return;
++  }
++
++  std::string truncation_utf8 =
++      truncation_json.IsNull() ? std::string() : truncation_json.Utf8();
++  const uint64_t seq = NextSequenceNumber();
++  LogEventWithSequence(config, category, phase, api, args_json, seq,
++                       std::string_view(), false, std::string_view(),
++                       std::string_view(), nullptr, truncation_utf8);
++}
++
+ void XTraceLogger::LogEventNoStackWithContext(const char* category,
+                                               const char* phase,
+                                               const char* api,
+diff --git a/third_party/blink/renderer/platform/xtrace/xtrace_logger.h b/third_party/blink/renderer/platform/xtrace/xtrace_logger.h
+--- a/third_party/blink/renderer/platform/xtrace/xtrace_logger.h
++++ b/third_party/blink/renderer/platform/xtrace/xtrace_logger.h
+@@ -45,7 +45,13 @@
+   static void LogEventNoStack(const char* category,
+                               const char* phase,
+                               const char* api,
+                               const String& args_json);
++  // truncation_json is a JSON object or empty. Empty keeps truncated=false.
++  static void LogEventNoStackWithTruncation(const char* category,
++                                            const char* phase,
++                                            const char* api,
++                                            const String& args_json,
++                                            const String& truncation_json);
+   static void LogEventNoStackWithContext(const char* category,
+                                          const char* phase,
+                                          const char* api,

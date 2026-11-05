@@ -37,6 +37,7 @@ XTrace 是一套**内建于打过补丁的 Chromium/V8 中的原生追踪工具*
 - 🔐 **明文捕获加密材料** —— 抓取 digest/AES/HMAC 的**输入与输出**,涵盖 CryptoJS 风格的 `charCodeAt` 哈希以及 WASM 边界,并按时钟对齐到同一条 trace。
 - 📏 **结构化且可验证** —— 稳定的 **schema v1 NDJSON**,配严格校验器:可拒绝被截断的值、不透明的引用,或无证据的家族命中。
 - 🧬 **可选的因果 schema v2** —— `--xtrace-causality=sync` 为渲染器线程内的同步执行补上因果身份(`call_id` / `parent_id` / `depth`):脚本 `evaluate` 成对 call/return,其余记录成为其子节点。完整保留 schema v1 字段,默认关闭。
+- 🪜 **可选的 Ignition 单步** —— `--xtrace-bytecode` 记录字节码类别 `bytecode`(API `Ignition.step`):脚本/函数身份、偏移、操作码、操作数,以及在取值模式下的累加器与寄存器。默认关闭,并可按脚本、函数、操作码、采样和步数上限过滤。
 - 🕵️ **数据流报告,而非黑魔法** —— 签名分析流水线把一次请求签名流程还原为 **输入 → 运算 → 输出** 的可审计报告。
 - 🖥️ **由浏览器进程持有 trace** —— 渲染进程沙箱保持**开启**;事件经 `blink.mojom.XTraceHost`(Mojo IPC)传出,由浏览器进程负责写文件。
 - 🧪 **开箱即用的实验环境** —— 自带混淆 / 逆向 / VMP 场景的测试页,外加 Python CLI 和 Electron 工作台。
@@ -112,6 +113,8 @@ PYTHONPATH=. python3 -m xtrace_launcher run \
 ```
 
 > 加上 `--xtrace-causality=sync` 即产出 **schema v2 因果 trace**(用 `--schema-version 2` 校验);默认仍是 schema v1。
+
+> 加上 `--xtrace-bytecode` 记录 Ignition 单步。过滤示例:`--xtrace-bytecode-scripts=app.js --xtrace-bytecode-functions=dispatch --xtrace-bytecode-opcodes=LdaSmi,JumpLoop --xtrace-bytecode-budget=100000`。事件形状见 [`docs/trace-schema-bytecode.md`](docs/trace-schema-bytecode.md)。
 
 [`test-pages/`](test-pages/) 下还有更多自包含测试页:`obfuscation-smoke.html`、`fingerprint-smoke.html`、`json-parse-smoke.html`、`causality-smoke.html`,以及 worker/fetch 变体。
 

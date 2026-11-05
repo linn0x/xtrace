@@ -1778,6 +1778,119 @@ def build_causality_summary(
     }
 
 
+def _bytecode_arg(event: dict[str, Any]) -> dict[str, Any] | None:
+    if event.get("api") != "Ignition.step" or event.get("category") != "bytecode":
+        return None
+    args = event.get("args")
+    if isinstance(args, list) and args and isinstance(args[0], dict):
+        return args[0]
+    return None
+
+
+def _guest_immediate(arg: dict[str, Any]) -> int | None:
+    opcode = str(arg.get("opcode") or "")
+    if opcode == "LdaZero":
+        return 0
+    operands = arg.get("operands")
+    if not isinstance(operands, list):
+        return None
+    if opcode == "LdaSmi" or opcode.startswith("LdaSmi"):
+        for operand in operands:
+            if not isinstance(operand, dict) or operand.get("type") not in {"Imm", "UImm"}:
+                continue
+            value = operand.get("value")
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+    if opcode == "LdaConstant":
+        for operand in operands:
+            if not isinstance(operand, dict):
+                continue
+            value = operand.get("constant", operand.get("value"))
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+    return None
+
+
+def build_bytecode_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize Ignition.step records and guess a JSVMP dispatch loop.
+
+    A dispatch loop is a hot interpreted function with a JumpLoop and either a
+    SwitchOn* bytecode or a compare/jump chain over several LdaSmi immediates.
+    Those immediates are reported as the guest opcode histogram. This is a
+    heuristic, not a lifted program.
+    """
+    steps: list[dict[str, Any]] = []
+    for event in events:
+        arg = _bytecode_arg(event)
+        if arg is None:
+            continue
+        steps.append(arg)
+    histogram: Counter[str] = Counter(str(arg.get("opcode") or "") for arg in steps)
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for arg in steps:
+        key = (
+            arg.get("script_id"),
+            arg.get("function_literal_id"),
+            arg.get("script_url") or "",
+            arg.get("function_name") or "",
+        )
+        groups.setdefault(key, []).append(arg)
+    loops: list[dict[str, Any]] = []
+    for key, group in groups.items():
+        opcodes = Counter(str(arg.get("opcode") or "") for arg in group)
+        jump_loops = opcodes.get("JumpLoop", 0)
+        switches = sum(count for name, count in opcodes.items() if name.startswith("SwitchOn"))
+        compares = (
+            opcodes.get("TestEqual", 0)
+            + opcodes.get("TestEqualStrict", 0)
+            + opcodes.get("JumpIfFalse", 0)
+            + opcodes.get("JumpIfTrue", 0)
+            + opcodes.get("JumpIfToBooleanTrue", 0)
+            + opcodes.get("JumpIfToBooleanFalse", 0)
+        )
+        guest: Counter[int] = Counter()
+        offsets: Counter[int] = Counter()
+        for arg in group:
+            offset = arg.get("bytecode_offset")
+            if isinstance(offset, int) and not isinstance(offset, bool):
+                offsets[offset] += 1
+            immediate = _guest_immediate(arg)
+            if immediate is not None:
+                guest[immediate] += 1
+        kind = None
+        if len(group) >= 32 and jump_loops >= 1 and switches >= 1:
+            kind = "switch_dispatch"
+        elif len(group) >= 32 and jump_loops >= 1 and compares > 0 and len(guest) >= 4:
+            kind = "compare_dispatch"
+        if kind is None:
+            continue
+        hot_offset = offsets.most_common(1)[0][0] if offsets else None
+        loops.append({
+            "kind": kind,
+            "script_id": key[0],
+            "function_literal_id": key[1],
+            "script_url": key[2],
+            "function_name": key[3],
+            "step_count": len(group),
+            "jump_loop_count": jump_loops,
+            "hot_bytecode_offset": hot_offset,
+            "host_opcode_histogram": [
+                {"opcode": name, "count": count} for name, count in opcodes.most_common(8)
+            ],
+            "guest_opcode_histogram": [
+                {"value": value, "count": count} for value, count in guest.most_common(32)
+            ],
+        })
+    loops.sort(key=lambda item: item["step_count"], reverse=True)
+    return {
+        "step_count": len(steps),
+        "opcode_histogram": [
+            {"opcode": name, "count": count} for name, count in histogram.most_common(24)
+        ],
+        "dispatch_loops": loops[:8],
+    }
+
+
 def summarize(
     events: list[dict[str, Any]],
     *,
@@ -2026,6 +2139,7 @@ def summarize(
             max_depth=max_causality_depth,
             max_nodes=max_causality_nodes,
         ),
+        "bytecode": build_bytecode_summary(events),
         "_source_snippets": source_analysis["source_snippets"],
     }
     if profile == PROFILE_GENERIC_VMP:
@@ -2114,6 +2228,23 @@ def print_summary(summary: dict[str, Any], trace: Path) -> None:
         f"{summary.get('dispatch_light_resolved_count', 0)}/"
         f"{summary.get('dispatch_light_unresolved_count', 0)}"
     )
+    bytecode = summary.get("bytecode") or {}
+    if bytecode.get("step_count"):
+        print(f"Bytecode steps: {bytecode.get('step_count', 0)}")
+        for item in (bytecode.get("opcode_histogram") or [])[:8]:
+            print(f"  {item.get('opcode')}: {item.get('count')}")
+        for loop in (bytecode.get("dispatch_loops") or [])[:3]:
+            guest = ", ".join(
+                f"{item.get('value')} x{item.get('count')}"
+                for item in (loop.get("guest_opcode_histogram") or [])[:6]
+            )
+            print(
+                "Bytecode dispatch loop: "
+                f"{loop.get('kind')} {loop.get('function_name') or '?'} "
+                f"steps={loop.get('step_count')} "
+                f"hot_offset={loop.get('hot_bytecode_offset')}"
+                + (f" guest[{guest}]" if guest else "")
+            )
     if summary.get("profile", PROFILE_SIGNATURE) == PROFILE_GENERIC_VMP:
         print(f"VMP events observed: {summary.get('vmp_event_count', 0)}")
         family_counts = summary.get("vmp_family_counts", [])

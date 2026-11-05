@@ -38,6 +38,8 @@ scripts/bootstrap_chromium.sh
 #    0002-xtrace-v8-vmp-hooks.patch  -> chromium/src/v8   (V8 builtins / runtime)
 #    0003-xtrace-schema-v2-renderer.patch -> chromium/src (renderer causality)
 #    0004-xtrace-schema-v2-browser.patch  -> chromium/src (browser external boundaries)
+#    0005-xtrace-ignition-step.patch     -> chromium/src/v8 (Ignition bytecode steps)
+#    0006-xtrace-ignition-step-blink.patch -> chromium/src (bytecode trace events)
 scripts/apply_patches.sh
 
 # 3. Generate build files
@@ -94,6 +96,7 @@ Collection surfaces (schema v1):
 - **Storage / cookies:** `Storage.getItem/setItem/removeItem/clear/key`, `Document.cookie.get/set`
 - **Dynamic code:** `eval`, `new Function`, `setTimeout.string`, `setInterval.string`, `HTMLScriptElement.src.set`, `HTMLScriptElement.inserted`
 - **VMP families:** base64/text-codec/byte-buffer (ArrayBuffer/DataView/TypedArray), dynamic dispatch (`Object.keys`, `Reflect.*`, Map/Set tables, Proxy traps), integer bitwise/shift (via the Ignition bytecode handler path plus V8 feedback/baseline/Torque coverage), hash/crypto (`SubtleCrypto.digest/sign/importKey`), anti-debug timing (`debugger`, timing gates), and source/native-code probes (`Function.prototype.toString`)
+- **Ignition steps (opt-in):** `--xtrace-bytecode` records category `bytecode` / API `Ignition.step` (opcode, operands, and value capture when the mode allows). See `docs/trace-schema-bytecode.md`.
 - **URL/query:** `URL.*`/`URLSearchParams.*` hooks carry local `url_object_id`/`search_params_id` and `before_serialized`/`serialized` state so reports can group object-level causality and preserve final query material before request construction
 
 `Reflect.apply` / `Function.prototype.call/apply` are report-recognized dynamic-dispatch indicators but their direct arm64 builtin hook is disabled — smoke testing showed renderer crashes; a safer future version should hook via cross-architecture CSA/Torque or at the call site.

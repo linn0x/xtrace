@@ -6,6 +6,8 @@ set -euo pipefail
 #   patches/0002-xtrace-v8-vmp-hooks.patch  -> chromium/src/v8     (V8 builtins/runtime)
 #   patches/0003-xtrace-schema-v2-renderer.patch -> chromium/src    (renderer causality)
 #   patches/0004-xtrace-schema-v2-browser.patch  -> chromium/src    (external boundaries)
+#   patches/0005-xtrace-ignition-step.patch -> chromium/src/v8       (Ignition steps)
+#   patches/0006-xtrace-ignition-step-blink.patch -> chromium/src    (bytecode events)
 #
 # Run scripts/bootstrap_chromium.sh first so the tree is synced to the pinned
 # Chromium revision recorded in docs/chromium-build.md. The patches only apply
@@ -17,6 +19,8 @@ PATCH_NATIVE="$ROOT/patches/0001-xtrace-native-logger.patch"
 PATCH_V8="$ROOT/patches/0002-xtrace-v8-vmp-hooks.patch"
 PATCH_CAUSALITY_RENDERER="$ROOT/patches/0003-xtrace-schema-v2-renderer.patch"
 PATCH_CAUSALITY_BROWSER="$ROOT/patches/0004-xtrace-schema-v2-browser.patch"
+PATCH_BYTECODE_V8="$ROOT/patches/0005-xtrace-ignition-step.patch"
+PATCH_BYTECODE_BLINK="$ROOT/patches/0006-xtrace-ignition-step-blink.patch"
 
 ensure_git_tree() {
   local tree="$1" label="$2"
@@ -81,6 +85,8 @@ ensure_patch "$PATCH_NATIVE"
 ensure_patch "$PATCH_V8"
 ensure_patch "$PATCH_CAUSALITY_RENDERER"
 ensure_patch "$PATCH_CAUSALITY_BROWSER"
+ensure_patch "$PATCH_BYTECODE_V8"
+ensure_patch "$PATCH_BYTECODE_BLINK"
 
 NATIVE_MODE="$(preflight_one "$SRC" "$PATCH_NATIVE")"
 V8_MODE="$(preflight_one "$SRC/v8" "$PATCH_V8")"
@@ -90,6 +96,10 @@ CAUSALITY_RENDERER_MODE="$(preflight_one "$SRC" "$PATCH_CAUSALITY_RENDERER")"
 apply_one "$SRC" "$PATCH_CAUSALITY_RENDERER" "$CAUSALITY_RENDERER_MODE"
 CAUSALITY_BROWSER_MODE="$(preflight_one "$SRC" "$PATCH_CAUSALITY_BROWSER")"
 apply_one "$SRC" "$PATCH_CAUSALITY_BROWSER" "$CAUSALITY_BROWSER_MODE"
+BYTECODE_BLINK_MODE="$(preflight_one "$SRC" "$PATCH_BYTECODE_BLINK")"
+apply_one "$SRC" "$PATCH_BYTECODE_BLINK" "$BYTECODE_BLINK_MODE"
 apply_one "$SRC/v8" "$PATCH_V8" "$V8_MODE"
+BYTECODE_V8_MODE="$(preflight_one "$SRC/v8" "$PATCH_BYTECODE_V8")"
+apply_one "$SRC/v8" "$PATCH_BYTECODE_V8" "$BYTECODE_V8_MODE"
 
 echo "Patches applied. Next: scripts/gn_gen_xtrace.sh && scripts/build_chromium.sh"

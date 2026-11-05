@@ -3260,6 +3260,127 @@ def event_has_vmp_family_evidence(event: dict) -> bool:
     )
 
 
+def _bytecode_is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _bytecode_partial_paths(value, path: str = "args"):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key)
+            item_path = child_path(path, key_text)
+            if is_preview_field(key_text) or (is_redaction_field(key_text) and item is True):
+                yield item_path
+            yield from _bytecode_partial_paths(item, item_path)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _bytecode_partial_paths(item, index_path(path, index))
+    elif isinstance(value, str) and (
+        is_redacted_marker(value)
+        or is_opaque_ref(value)
+        or is_summary_ref(value)
+        or value in {"<truncated>", "[truncated]", "..."}
+    ):
+        yield path
+
+
+def validate_bytecode_event(event: dict, index: int) -> None:
+    """Strict shape check for opt-in Ignition.step records. Other events are ignored."""
+    api = event.get("api")
+    category = event.get("category")
+    if api != "Ignition.step" and category != "bytecode":
+        return
+    if api != "Ignition.step" or category != "bytecode":
+        raise TraceValidationError(
+            f"Event {index} bytecode record must use category 'bytecode' and api 'Ignition.step'"
+        )
+    if event.get("phase") != "call":
+        raise TraceValidationError(f"Event {index} Ignition.step phase must be 'call'")
+    if not isinstance(event.get("truncated"), bool):
+        raise TraceValidationError(f"Event {index} Ignition.step truncated must be a boolean")
+    args = event.get("args")
+    if not isinstance(args, list) or len(args) != 1 or not isinstance(args[0], dict):
+        raise TraceValidationError(f"Event {index} Ignition.step args must be a one-element object array")
+    arg = args[0]
+    if arg.get("kind") != "vm_step" or arg.get("pre_state") is not True:
+        raise TraceValidationError(f"Event {index} Ignition.step must be a pre-state vm_step")
+    if arg.get("capture_values") not in {"full", "summary", "args-only"}:
+        raise TraceValidationError(f"Event {index} Ignition.step capture_values is invalid")
+    if arg.get("value_truncated") is not event.get("truncated"):
+        raise TraceValidationError(
+            f"Event {index} Ignition.step value_truncated must match truncated"
+        )
+    for field in ("script_url", "function_name", "opcode", "operand_scale"):
+        if not isinstance(arg.get(field), str):
+            raise TraceValidationError(f"Event {index} Ignition.step {field} must be a string")
+    if not arg["opcode"]:
+        raise TraceValidationError(f"Event {index} Ignition.step opcode must be non-empty")
+    if arg["operand_scale"] not in {"Single", "Double", "Quadruple"}:
+        raise TraceValidationError(f"Event {index} Ignition.step operand_scale is invalid")
+    for field in ("script_id", "function_literal_id"):
+        if not _bytecode_is_int(arg.get(field)):
+            raise TraceValidationError(f"Event {index} Ignition.step {field} must be an integer")
+    if not _bytecode_is_int(arg.get("bytecode_offset")) or arg["bytecode_offset"] < 0:
+        raise TraceValidationError(f"Event {index} Ignition.step bytecode_offset must be a non-negative integer")
+    operands = arg.get("operands")
+    if not isinstance(operands, list):
+        raise TraceValidationError(f"Event {index} Ignition.step operands must be an array")
+    for operand in operands:
+        if not isinstance(operand, dict):
+            raise TraceValidationError(f"Event {index} Ignition.step operand must be an object")
+        if not _bytecode_is_int(operand.get("index")) or operand["index"] < 0:
+            raise TraceValidationError(f"Event {index} Ignition.step operand index must be a non-negative integer")
+        if not isinstance(operand.get("type"), str) or not operand["type"]:
+            raise TraceValidationError(f"Event {index} Ignition.step operand type must be a non-empty string")
+    mode = arg["capture_values"]
+    if mode == "args-only":
+        for field in ("accumulator", "accumulator_type", "accumulator_length", "registers"):
+            if field in arg:
+                raise TraceValidationError(
+                    f"Event {index} Ignition.step args-only record must not include {field}"
+                )
+    else:
+        if not isinstance(arg.get("accumulator_type"), str) or not arg["accumulator_type"]:
+            raise TraceValidationError(f"Event {index} Ignition.step accumulator_type is required")
+        if arg["accumulator_type"] == "string" and mode == "summary":
+            if "accumulator" in arg or not _bytecode_is_int(arg.get("accumulator_length")):
+                raise TraceValidationError(
+                    f"Event {index} Ignition.step summary string accumulator needs accumulator_length only"
+                )
+        elif "accumulator" not in arg:
+            raise TraceValidationError(f"Event {index} Ignition.step accumulator is required for {mode}")
+        registers = arg.get("registers")
+        if registers is not None:
+            if not isinstance(registers, list):
+                raise TraceValidationError(f"Event {index} Ignition.step registers must be an array")
+            for reg in registers:
+                if not isinstance(reg, dict) or not isinstance(reg.get("name"), str) or not isinstance(reg.get("type"), str):
+                    raise TraceValidationError(f"Event {index} Ignition.step register needs name and type")
+                if reg["type"] == "string" and mode == "summary":
+                    if "value" in reg or not _bytecode_is_int(reg.get("value_length")):
+                        raise TraceValidationError(
+                            f"Event {index} Ignition.step summary string register needs value_length only"
+                        )
+    partial = list(_bytecode_partial_paths(arg))
+    if partial:
+        raise TraceValidationError(
+            f"Event {index} Ignition.step has opaque or truncated-looking args: " + ", ".join(partial)
+        )
+    if event["truncated"]:
+        truncation = event.get("truncation")
+        if not isinstance(truncation, dict):
+            raise TraceValidationError(f"Event {index} Ignition.step truncated=true requires truncation metadata")
+        for field in ("original_size", "preview", "hash"):
+            if field not in truncation:
+                raise TraceValidationError(f"Event {index} Ignition.step truncation missing {field}")
+        if not _bytecode_is_int(truncation.get("original_size")) or truncation["original_size"] < 0:
+            raise TraceValidationError(f"Event {index} Ignition.step truncation original_size must be a non-negative integer")
+        if not isinstance(truncation.get("preview"), str) or not isinstance(truncation.get("hash"), str) or not truncation["hash"]:
+            raise TraceValidationError(f"Event {index} Ignition.step truncation preview and hash must be strings")
+    elif isinstance(event.get("truncation"), dict):
+        raise TraceValidationError(f"Event {index} Ignition.step truncation metadata requires truncated=true")
+
+
 def validate_trace(
     path: Path,
     expected: Iterable[str] = DEFAULT_EXPECTED_APIS,
@@ -3276,6 +3397,8 @@ def validate_trace(
     require_material_refs: bool = False,
 ) -> None:
     events = load_events(path)
+    for index, event in enumerate(events, start=1):
+        validate_bytecode_event(event, index)
     if schema_version is not None:
         if schema_version not in (1, 2):
             raise TraceValidationError(f"Unsupported schema version: {schema_version}")

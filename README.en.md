@@ -37,6 +37,7 @@ It is deliberately **site-neutral and general**: the same tooling works on any o
 - 🔐 **Crypto material in the clear** — captures digest/AES/HMAC inputs *and outputs*, including CryptoJS-style `charCodeAt` hashing and the WASM boundary, clock-aligned into one trace.
 - 📏 **Structured & verifiable** — stable **schema v1 NDJSON** with a strict validator: reject truncated values, opaque refs, or evidence-free family hits.
 - 🧬 **Optional causal schema v2** — `--xtrace-causality=sync` adds renderer-thread synchronous causal identity (`call_id` / `parent_id` / `depth`): a script `evaluate` becomes a paired call/return and other records become its children. Preserves every schema v1 field; off by default.
+- 🪜 **Optional Ignition single-step** — `--xtrace-bytecode` records category `bytecode` (API `Ignition.step`): script and function identity, bytecode offset, opcode, operands, and accumulator/register values when the capture mode allows. Off by default, with script, function, opcode, sampling, and step-budget filters.
 - 🕵️ **Data-flow reports, not magic** — the signing-analysis pipeline reduces a request-signing flow to **inputs → operators → output** as an auditable report.
 - 🖥️ **Browser owns the trace** — renderer sandboxing stays *on*; events cross `blink.mojom.XTraceHost` (Mojo IPC) and the browser process writes the file.
 - 🧪 **Batteries-included harness** — self-contained smoke pages for obfuscation / reverse / VMP surfaces, plus a Python CLI and an Electron workbench.
@@ -112,6 +113,8 @@ PYTHONPATH=. python3 -m xtrace_launcher run \
 ```
 
 > Add `--xtrace-causality=sync` to emit a **schema v2 causal trace** (validate with `--schema-version 2`); the default stays schema v1.
+
+> Add `--xtrace-bytecode` to record Ignition steps. Example filter: `--xtrace-bytecode-scripts=app.js --xtrace-bytecode-functions=dispatch --xtrace-bytecode-opcodes=LdaSmi,JumpLoop --xtrace-bytecode-budget=100000`. Event shape: [`docs/trace-schema-bytecode.md`](docs/trace-schema-bytecode.md).
 
 More self-contained pages under [`test-pages/`](test-pages/): `obfuscation-smoke.html`, `fingerprint-smoke.html`, `json-parse-smoke.html`, `causality-smoke.html`, and worker/fetch variants.
 

@@ -79,3 +79,7 @@ New producers should not emit nested `xtrace_truncated` or `original_args` as a 
 Raw traces are local forensic artifacts. They may contain live headers, cookies, token-like query parameters, request/response values, upload bodies, and signature-related material. XTrace does not automatically upload them and does not redact them by default because incomplete values can mislead runtime reconstruction.
 
 Any export/share workflow must make its own explicit redaction decision outside the raw trace producer.
+
+## Ignition bytecode steps
+
+Opt-in category `bytecode` events use API `Ignition.step`. They keep every schema v1 field (`seq`, `mono_time_us`, `truncated`, and the top-level `truncation` object when a captured string is shortened). The step payload lives in `args[0]`. Field list, filters, and the handler-entry mechanism are in [`trace-schema-bytecode.md`](trace-schema-bytecode.md).
