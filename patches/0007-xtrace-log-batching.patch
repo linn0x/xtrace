@@ -39,7 +39,7 @@ index db47da2..13a3ddc 100644
  
  void XTraceHostImpl::LogAsset(const std::string& content_path,
 diff --git a/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc b/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
-index 7496dff..307fa9f 100644
+index 7496dff..5e0112e 100644
 --- a/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
 +++ b/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
 @@ -52,13 +52,18 @@ constexpr char kCausalitySwitch[] = "xtrace-causality";
@@ -93,7 +93,7 @@ index 7496dff..307fa9f 100644
      if (token == category) {
        return true;
      }
-@@ -379,13 +390,64 @@ std::string BuildScriptAssetFieldsAndSend(const XTraceConfig& config,
+@@ -379,13 +390,75 @@ std::string BuildScriptAssetFieldsAndSend(const XTraceConfig& config,
    return fields;
  }
  
@@ -124,7 +124,18 @@ index 7496dff..307fa9f 100644
 +  }
 +
 +  void Flush() {
-+    if (flushing || lines.empty() || !host.is_bound()) {
++    if (flushing || lines.empty()) {
++      return;
++    }
++    // Enqueue used to flush only when the pipe was already bound, which
++    // never happens on the normal Log path. Bind here or the batch is dropped.
++    if (!host.is_bound()) {
++      if (!Platform::Current()) {
++        return;
++      }
++      Get();
++    }
++    if (!host.is_bound()) {
 +      return;
 +    }
 +    flushing = true;
@@ -136,7 +147,8 @@ index 7496dff..307fa9f 100644
 +    bytes = 0;
 +    host->LogBatch(std::move(batch));
 +    flushing = false;
-+  }
+   }
+-  return host.get();
 +
 +  void Enqueue(std::string line) {
 +    bytes += line.size();
@@ -144,8 +156,7 @@ index 7496dff..307fa9f 100644
 +    if (lines.size() >= kEventBatchCount || bytes >= kEventBatchBytes) {
 +      Flush();
 +    }
-   }
--  return host.get();
++  }
 +
 +  ~TraceSender() { Flush(); }
 +};
@@ -164,7 +175,7 @@ index 7496dff..307fa9f 100644
  }
  
  bool IsActivationTerminal(const char* phase, const char* api) {
-@@ -473,7 +535,7 @@ void LogEventWithSequence(const XTraceConfig& config,
+@@ -473,7 +546,7 @@ void LogEventWithSequence(const XTraceConfig& config,
    line.append(",\"event_id\":");
    line.append(QuoteJsonString(event_id));
    line.append(",\"session_id\":");
@@ -173,7 +184,7 @@ index 7496dff..307fa9f 100644
    line.append(",\"seq\":");
    line.append(base::NumberToString(seq));
    line.append(",\"session_seq\":");
-@@ -529,7 +591,7 @@ void LogEventWithSequence(const XTraceConfig& config,
+@@ -529,7 +602,7 @@ void LogEventWithSequence(const XTraceConfig& config,
      batch->push_back(std::move(line));
      return;
    }
@@ -182,7 +193,7 @@ index 7496dff..307fa9f 100644
  }
  
  }  // namespace
-@@ -726,6 +788,8 @@ void XTraceLogger::LogBytecodeBatch(const String& payload) {
+@@ -726,6 +799,8 @@ void XTraceLogger::LogBytecodeBatch(const String& payload) {
    if (lines.empty()) {
      return;
    }
