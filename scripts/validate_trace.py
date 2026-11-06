@@ -3288,6 +3288,20 @@ def validate_bytecode_event(event: dict, index: int) -> None:
     """Strict shape check for opt-in Ignition.step records. Other events are ignored."""
     api = event.get("api")
     category = event.get("category")
+    if api == "Ignition.drop":
+        if category != "bytecode":
+            raise TraceValidationError(f"Event {index} Ignition.drop category must be 'bytecode'")
+        if event.get("phase") != "call":
+            raise TraceValidationError(f"Event {index} Ignition.drop phase must be 'call'")
+        args = event.get("args")
+        if not isinstance(args, list) or len(args) != 1 or not isinstance(args[0], dict):
+            raise TraceValidationError(f"Event {index} Ignition.drop args must be a one-element object array")
+        if args[0].get("kind") != "vm_step_drop":
+            raise TraceValidationError(f"Event {index} Ignition.drop kind must be 'vm_step_drop'")
+        dropped = args[0].get("dropped")
+        if not _bytecode_is_int(dropped) or dropped < 0:
+            raise TraceValidationError(f"Event {index} Ignition.drop dropped must be a non-negative integer")
+        return
     if api != "Ignition.step" and category != "bytecode":
         return
     if api != "Ignition.step" or category != "bytecode":
@@ -3347,6 +3361,12 @@ def validate_bytecode_event(event: dict, index: int) -> None:
                 raise TraceValidationError(
                     f"Event {index} Ignition.step summary string accumulator needs accumulator_length only"
                 )
+        elif arg["accumulator_type"] == "string" and mode == "full" and "accumulator" not in arg:
+            # The hot path records a string by length and does not copy the text.
+            if not _bytecode_is_int(arg.get("accumulator_length")):
+                raise TraceValidationError(
+                    f"Event {index} Ignition.step full string accumulator needs accumulator or accumulator_length"
+                )
         elif "accumulator" not in arg:
             raise TraceValidationError(f"Event {index} Ignition.step accumulator is required for {mode}")
         registers = arg.get("registers")
@@ -3381,6 +3401,138 @@ def validate_bytecode_event(event: dict, index: int) -> None:
         raise TraceValidationError(f"Event {index} Ignition.step truncation metadata requires truncated=true")
 
 
+_BYTECODE_RETAIN_CAP = 8192
+
+
+def _is_bytecode_record(event: dict) -> bool:
+    return event.get("category") == "bytecode" or event.get("api") in {"Ignition.step", "Ignition.drop"}
+
+
+def _note_causal_node(nodes: dict[str, int], event: dict) -> None:
+    if event.get("schema_version") != 2:
+        return
+    kind = event.get("causality_kind")
+    if kind in {None, "external"}:
+        return
+    if kind == "paired" and event.get("phase") in {"return", "exception"}:
+        return
+    call_id = event.get("call_id")
+    depth = event.get("depth")
+    if isinstance(call_id, str) and isinstance(depth, int) and not isinstance(depth, bool):
+        nodes[call_id] = depth
+
+
+def _check_global_seq_online(event: dict, index: int, state: dict) -> None:
+    has = "global_seq" in event
+    if state["mode"] is None:
+        return
+    if state["mode"] == "all":
+        if not has:
+            raise TraceValidationError(
+                f"Event {index} missing global_seq after earlier events had it"
+            )
+        value = event.get("global_seq")
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise TraceValidationError(f"Event {index} has non-integer global_seq field")
+        if value <= state["previous"]:
+            raise TraceValidationError(
+                f"Event {index} has non-monotonic global_seq: {value} <= {state['previous']}"
+            )
+        state["previous"] = value
+        return
+    if has:
+        raise TraceValidationError(
+            f"Event {index} has global_seq after earlier events omitted it"
+        )
+
+
+def _load_events_spilling_bytecode(path: Path, schema_version: int | None):
+    """Load a trace, keeping at most a cap of Ignition records.
+
+    At or under the cap the returned list is the same sequence ``load_events``
+    would return. Above the cap, extra Ignition records are checked and dropped.
+    """
+    retained: list[dict] = []
+    bytecode_count = 0
+    saw_step = False
+    spilled = False
+    nodes: dict[str, int] = {}
+    global_state = {"mode": None, "previous": 0}
+    index = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise TraceValidationError(f"Malformed JSON on line {line_number}: {exc}") from exc
+            if not isinstance(event, dict):
+                raise TraceValidationError(f"Expected object on line {line_number}")
+            index += 1
+            is_bytecode = _is_bytecode_record(event)
+            if is_bytecode:
+                bytecode_count += 1
+                if event.get("api") == "Ignition.step":
+                    saw_step = True
+                validate_bytecode_event(event, index)
+            if not spilled and (not is_bytecode or bytecode_count <= _BYTECODE_RETAIN_CAP):
+                event.setdefault("_file_index", len(retained))
+                retained.append(event)
+                if is_bytecode and bytecode_count == _BYTECODE_RETAIN_CAP:
+                    pass
+                continue
+            if not spilled:
+                spilled = True
+                validate_global_sequence(retained)
+                if any("global_seq" in item for item in retained):
+                    global_state["mode"] = "all"
+                    global_state["previous"] = retained[-1]["global_seq"]
+                else:
+                    global_state["mode"] = "none"
+                for item in retained:
+                    _note_causal_node(nodes, item)
+            if is_bytecode:
+                if schema_version == 1:
+                    validate_schema_v1_event(event, index)
+                elif schema_version == 2:
+                    validate_schema_v2_event(event, index)
+                    kind = event.get("causality_kind")
+                    parent_id = event.get("parent_id")
+                    depth = event.get("depth")
+                    if kind == "singleton":
+                        if parent_id is None:
+                            if depth != 0:
+                                raise TraceValidationError(
+                                    f"Event {index} root causal node must have depth 0"
+                                )
+                        else:
+                            parent_session, separator, _ = str(parent_id).rpartition(":")
+                            if not separator or parent_session != event.get("session_id"):
+                                raise TraceValidationError(
+                                    f"Event {index} crosses producer sessions"
+                                )
+                            parent_depth = nodes.get(parent_id)
+                            if parent_depth is None:
+                                raise TraceValidationError(
+                                    f"Event {index} has missing or forward parent {parent_id}"
+                                )
+                            if depth != parent_depth + 1:
+                                raise TraceValidationError(
+                                    f"Event {index} depth does not follow parent {parent_id}"
+                                )
+                # Bytecode singletons are not kept and are not parents.
+            else:
+                event.setdefault("_file_index", len(retained))
+                retained.append(event)
+                _note_causal_node(nodes, event)
+            _check_global_seq_online(event, index, global_state)
+    if not retained and bytecode_count == 0:
+        raise TraceValidationError(f"No events found in {path}")
+    return retained, bytecode_count, spilled, saw_step
+
+
 def validate_trace(
     path: Path,
     expected: Iterable[str] = DEFAULT_EXPECTED_APIS,
@@ -3396,7 +3548,15 @@ def validate_trace(
     require_vmp_family_evidence: bool = False,
     require_material_refs: bool = False,
 ) -> None:
-    events = load_events(path)
+    retained, bytecode_count, spilled, saw_step = _load_events_spilling_bytecode(
+        path, schema_version
+    )
+    # Traces with no (or few) Ignition records keep the historical loader so
+    # indexes, _file_index, and every bulk check stay identical.
+    if bytecode_count <= _BYTECODE_RETAIN_CAP:
+        events = load_events(path)
+    else:
+        events = retained
     for index, event in enumerate(events, start=1):
         validate_bytecode_event(event, index)
     if schema_version is not None:
@@ -3407,7 +3567,8 @@ def validate_trace(
                 validate_schema_v1_event(event, index)
             else:
                 validate_schema_v2_event(event, index)
-        validate_global_sequence(events)
+        if not spilled:
+            validate_global_sequence(events)
         if schema_version == 2:
             validate_causality(events)
 
@@ -3421,6 +3582,8 @@ def validate_trace(
         validate_material_refs(events)
 
     seen = {event.get("api") for event in events}
+    if spilled and saw_step:
+        seen.add("Ignition.step")
     missing = [api for api in expected if api not in seen]
     if missing:
         raise TraceValidationError("Missing expected APIs: " + ", ".join(missing))

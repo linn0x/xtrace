@@ -149,7 +149,12 @@ def repair_ndjson_line(line: str) -> str:
     return repaired
 
 
-def load_events(path: Path, *, skip_bad_json: bool = False) -> list[dict[str, Any]]:
+def load_events(
+    path: Path,
+    *,
+    skip_bad_json: bool = False,
+    bytecode_rollup: "BytecodeRollup | None" = None,
+) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     bad_lines: list[tuple[int, str]] = []
     with path.open("r", encoding="utf-8") as handle:
@@ -170,6 +175,8 @@ def load_events(path: Path, *, skip_bad_json: bool = False) -> list[dict[str, An
                         continue
                     raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
             if isinstance(event, dict):
+                if bytecode_rollup is not None and bytecode_rollup.consume(event):
+                    continue
                 event.setdefault("_file_index", len(events))
                 events.append(event)
     if bad_lines and skip_bad_json:
@@ -1811,6 +1818,132 @@ def _guest_immediate(arg: dict[str, Any]) -> int | None:
     return None
 
 
+class _BytecodeGroup:
+    """Bounded per-function counters. Caps keep a multi-million-step trace small."""
+
+    _OFFSET_CAP = 32
+    _GUEST_CAP = 64
+
+    def __init__(self) -> None:
+        self.step_count = 0
+        self.opcodes: Counter[str] = Counter()
+        self.offsets: Counter[int] = Counter()
+        self.guest: Counter[int] = Counter()
+
+    def add(self, arg: dict[str, Any]) -> None:
+        self.step_count += 1
+        self.opcodes[str(arg.get("opcode") or "")] += 1
+        offset = arg.get("bytecode_offset")
+        if isinstance(offset, int) and not isinstance(offset, bool):
+            self._bump(self.offsets, offset, self._OFFSET_CAP)
+        immediate = _guest_immediate(arg)
+        if immediate is not None:
+            self._bump(self.guest, immediate, self._GUEST_CAP)
+
+    @staticmethod
+    def _bump(counter: Counter[int], key: int, cap: int) -> None:
+        if key in counter or len(counter) < cap:
+            counter[key] += 1
+            return
+        rare, rare_count = min(counter.items(), key=lambda item: item[1])
+        if rare_count == 1:
+            del counter[rare]
+            counter[key] += 1
+
+
+class BytecodeRollup:
+    """Incremental Ignition summary. ``consume`` returns True when the event is a step or drop."""
+
+    _GROUP_CAP = 64
+
+    def __init__(self) -> None:
+        self.step_count = 0
+        self.dropped = 0
+        self.histogram: Counter[str] = Counter()
+        self.groups: dict[tuple[Any, ...], _BytecodeGroup] = {}
+
+    def consume(self, event: dict[str, Any]) -> bool:
+        if event.get("api") == "Ignition.drop" and event.get("category") == "bytecode":
+            args = event.get("args")
+            if isinstance(args, list) and args and isinstance(args[0], dict):
+                dropped = args[0].get("dropped")
+                if isinstance(dropped, int) and not isinstance(dropped, bool) and dropped > 0:
+                    self.dropped += dropped
+            return True
+        arg = _bytecode_arg(event)
+        if arg is None:
+            return False
+        self.add(arg)
+        return True
+
+    def add(self, arg: dict[str, Any]) -> None:
+        self.step_count += 1
+        self.histogram[str(arg.get("opcode") or "")] += 1
+        key = (
+            arg.get("script_id"),
+            arg.get("function_literal_id"),
+            arg.get("script_url") or "",
+            arg.get("function_name") or "",
+        )
+        group = self.groups.get(key)
+        if group is None:
+            if len(self.groups) >= self._GROUP_CAP:
+                return
+            group = _BytecodeGroup()
+            self.groups[key] = group
+        group.add(arg)
+
+    def finish(self) -> dict[str, Any]:
+        loops: list[dict[str, Any]] = []
+        for key, group in self.groups.items():
+            opcodes = group.opcodes
+            jump_loops = opcodes.get("JumpLoop", 0)
+            switches = sum(count for name, count in opcodes.items() if name.startswith("SwitchOn"))
+            compares = (
+                opcodes.get("TestEqual", 0)
+                + opcodes.get("TestEqualStrict", 0)
+                + opcodes.get("JumpIfFalse", 0)
+                + opcodes.get("JumpIfTrue", 0)
+                + opcodes.get("JumpIfToBooleanTrue", 0)
+                + opcodes.get("JumpIfToBooleanFalse", 0)
+            )
+            kind = None
+            if group.step_count >= 32 and jump_loops >= 1 and switches >= 1:
+                kind = "switch_dispatch"
+            elif group.step_count >= 32 and jump_loops >= 1 and compares > 0 and len(group.guest) >= 4:
+                kind = "compare_dispatch"
+            if kind is None:
+                continue
+            hot_offset = group.offsets.most_common(1)[0][0] if group.offsets else None
+            loops.append({
+                "kind": kind,
+                "script_id": key[0],
+                "function_literal_id": key[1],
+                "script_url": key[2],
+                "function_name": key[3],
+                "step_count": group.step_count,
+                "jump_loop_count": jump_loops,
+                "hot_bytecode_offset": hot_offset,
+                "host_opcode_histogram": [
+                    {"opcode": name, "count": count} for name, count in opcodes.most_common(8)
+                ],
+                "guest_opcode_histogram": [
+                    {"value": value, "count": count} for value, count in group.guest.most_common(32)
+                ],
+            })
+        loops.sort(key=lambda item: item["step_count"], reverse=True)
+        summary = {
+            "step_count": self.step_count,
+            "opcode_histogram": [
+                {"opcode": name, "count": count} for name, count in self.histogram.most_common(24)
+            ],
+            "dispatch_loops": loops[:8],
+        }
+        if self.dropped:
+            summary["dropped"] = self.dropped
+        return summary
+
+
 def build_bytecode_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Summarize Ignition.step records and guess a JSVMP dispatch loop.
 
@@ -1819,76 +1952,10 @@ def build_bytecode_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     Those immediates are reported as the guest opcode histogram. This is a
     heuristic, not a lifted program.
     """
-    steps: list[dict[str, Any]] = []
+    rollup = BytecodeRollup()
     for event in events:
-        arg = _bytecode_arg(event)
-        if arg is None:
-            continue
-        steps.append(arg)
-    histogram: Counter[str] = Counter(str(arg.get("opcode") or "") for arg in steps)
-    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-    for arg in steps:
-        key = (
-            arg.get("script_id"),
-            arg.get("function_literal_id"),
-            arg.get("script_url") or "",
-            arg.get("function_name") or "",
-        )
-        groups.setdefault(key, []).append(arg)
-    loops: list[dict[str, Any]] = []
-    for key, group in groups.items():
-        opcodes = Counter(str(arg.get("opcode") or "") for arg in group)
-        jump_loops = opcodes.get("JumpLoop", 0)
-        switches = sum(count for name, count in opcodes.items() if name.startswith("SwitchOn"))
-        compares = (
-            opcodes.get("TestEqual", 0)
-            + opcodes.get("TestEqualStrict", 0)
-            + opcodes.get("JumpIfFalse", 0)
-            + opcodes.get("JumpIfTrue", 0)
-            + opcodes.get("JumpIfToBooleanTrue", 0)
-            + opcodes.get("JumpIfToBooleanFalse", 0)
-        )
-        guest: Counter[int] = Counter()
-        offsets: Counter[int] = Counter()
-        for arg in group:
-            offset = arg.get("bytecode_offset")
-            if isinstance(offset, int) and not isinstance(offset, bool):
-                offsets[offset] += 1
-            immediate = _guest_immediate(arg)
-            if immediate is not None:
-                guest[immediate] += 1
-        kind = None
-        if len(group) >= 32 and jump_loops >= 1 and switches >= 1:
-            kind = "switch_dispatch"
-        elif len(group) >= 32 and jump_loops >= 1 and compares > 0 and len(guest) >= 4:
-            kind = "compare_dispatch"
-        if kind is None:
-            continue
-        hot_offset = offsets.most_common(1)[0][0] if offsets else None
-        loops.append({
-            "kind": kind,
-            "script_id": key[0],
-            "function_literal_id": key[1],
-            "script_url": key[2],
-            "function_name": key[3],
-            "step_count": len(group),
-            "jump_loop_count": jump_loops,
-            "hot_bytecode_offset": hot_offset,
-            "host_opcode_histogram": [
-                {"opcode": name, "count": count} for name, count in opcodes.most_common(8)
-            ],
-            "guest_opcode_histogram": [
-                {"value": value, "count": count} for value, count in guest.most_common(32)
-            ],
-        })
-    loops.sort(key=lambda item: item["step_count"], reverse=True)
-    return {
-        "step_count": len(steps),
-        "opcode_histogram": [
-            {"opcode": name, "count": count} for name, count in histogram.most_common(24)
-        ],
-        "dispatch_loops": loops[:8],
-    }
+        rollup.consume(event)
+    return rollup.finish()
 
 
 def summarize(
@@ -1902,6 +1969,7 @@ def summarize(
     max_source_snippets: int = 80,
     max_causality_depth: int = 4,
     max_causality_nodes: int = 80,
+    bytecode_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     markers = profile_marker_params(profile, marker_params)
     api_counts = Counter(str(event.get("api", "")) for event in events)
@@ -2139,7 +2207,7 @@ def summarize(
             max_depth=max_causality_depth,
             max_nodes=max_causality_nodes,
         ),
-        "bytecode": build_bytecode_summary(events),
+        "bytecode": bytecode_summary if bytecode_summary is not None else build_bytecode_summary(events),
         "_source_snippets": source_analysis["source_snippets"],
     }
     if profile == PROFILE_GENERIC_VMP:
@@ -2230,7 +2298,9 @@ def print_summary(summary: dict[str, Any], trace: Path) -> None:
     )
     bytecode = summary.get("bytecode") or {}
     if bytecode.get("step_count"):
-        print(f"Bytecode steps: {bytecode.get('step_count', 0)}")
+        dropped = bytecode.get("dropped")
+        extra = f" dropped={dropped}" if dropped else ""
+        print(f"Bytecode steps: {bytecode.get('step_count', 0)}{extra}")
         for item in (bytecode.get("opcode_histogram") or [])[:8]:
             print(f"  {item.get('opcode')}: {item.get('count')}")
         for loop in (bytecode.get("dispatch_loops") or [])[:3]:
@@ -2453,7 +2523,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        events = load_events(args.trace, skip_bad_json=args.skip_bad_json)
+        bytecode_rollup = BytecodeRollup()
+        events = load_events(
+            args.trace,
+            skip_bad_json=args.skip_bad_json,
+            bytecode_rollup=bytecode_rollup,
+        )
         asset_sources = load_asset_sources(args.trace)
         summary = summarize(
             events,
@@ -2465,6 +2540,7 @@ def main(argv: list[str] | None = None) -> int:
             max_source_snippets=args.max_source_snippets,
             max_causality_depth=args.max_causality_depth,
             max_causality_nodes=args.max_causality_nodes,
+            bytecode_summary=bytecode_rollup.finish(),
         )
         if args.source_snippets_output:
             write_source_snippets(summary, args.source_snippets_output)

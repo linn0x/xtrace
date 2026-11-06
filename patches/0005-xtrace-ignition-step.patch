@@ -1,13 +1,278 @@
+diff --git a/src/builtins/arm64/builtins-arm64.cc b/src/builtins/arm64/builtins-arm64.cc
+index f7c9c32..cf6b583 100644
+--- a/src/builtins/arm64/builtins-arm64.cc
++++ b/src/builtins/arm64/builtins-arm64.cc
+@@ -1281,6 +1281,60 @@ void Builtins::Generate_BaselineOutOfLinePrologueDeopt(MacroAssembler* masm) {
+   __ TailCallBuiltin(Builtin::kInterpreterEntryTrampoline);
+ }
+ 
++
++// Select the clean or traced Ignition table. When --xtrace-bytecode is off
++// this is one not-taken branch. A one-entry cache skips the runtime for
++// functions that do not match the script/function filters.
++static void XTraceSelectDispatchTable(MacroAssembler* masm) {
++  Label use_clean, use_traced, slow, ready, matched, store;
++  Register bytecode = kInterpreterBytecodeArrayRegister;
++  __ Mov(x23, ExternalReference::address_of_xtrace_bytecode_enabled());
++  __ Ldrb(x23, MemOperand(x23));
++  __ Cbz(x23, &use_clean);
++
++  __ Mov(x23, ExternalReference::xtrace_bytecode_array_cache_address(
++                  masm->isolate()));
++  __ Ldr(x22, MemOperand(x23));
++  __ Cmp(x22, bytecode);
++  __ B(ne, &slow);
++  __ Mov(x23, ExternalReference::xtrace_decision_cache_address(masm->isolate()));
++  __ Ldrb(x22, MemOperand(x23));
++  __ Cbnz(x22, &use_traced);
++  __ B(&use_clean);
++
++  __ bind(&slow);
++  __ Push(kInterpreterAccumulatorRegister, xzr);
++  __ PushArgument(bytecode);
++  __ CallRuntime(Runtime::kXTraceSelectDispatchTable, 1);
++  __ Mov(x22, x0);
++  __ Pop(kInterpreterAccumulatorRegister, xzr);
++  __ Ldr(bytecode,
++         MemOperand(fp, InterpreterFrameConstants::kBytecodeArrayFromFp));
++  __ Cmp(x22, Operand(Smi::FromInt(1)));
++  __ B(eq, &matched);
++  __ Mov(x22, 0);
++  __ B(&store);
++  __ bind(&matched);
++  __ Mov(x22, 1);
++  __ bind(&store);
++  __ Mov(x23, ExternalReference::xtrace_bytecode_array_cache_address(
++                  masm->isolate()));
++  __ Str(bytecode, MemOperand(x23));
++  __ Mov(x23, ExternalReference::xtrace_decision_cache_address(masm->isolate()));
++  __ Strb(x22.W(), MemOperand(x23));
++  __ Cbnz(x22, &use_traced);
++
++  __ bind(&use_clean);
++  __ Mov(kInterpreterDispatchTableRegister,
++         ExternalReference::interpreter_dispatch_table_address(masm->isolate()));
++  __ B(&ready);
++  __ bind(&use_traced);
++  __ Mov(kInterpreterDispatchTableRegister,
++         ExternalReference::interpreter_traced_dispatch_table_address(
++             masm->isolate()));
++  __ bind(&ready);
++}
++
+ // Generate code for entering a JS function with the interpreter.
+ // On entry to the function the receiver and arguments have been pushed on the
+ // stack left to right.
+@@ -1450,9 +1504,7 @@ void Builtins::Generate_InterpreterEntryTrampoline(
+   // handler at the current bytecode offset.
+   Label do_dispatch;
+   __ bind(&do_dispatch);
+-  __ Mov(
+-      kInterpreterDispatchTableRegister,
+-      ExternalReference::interpreter_dispatch_table_address(masm->isolate()));
++  XTraceSelectDispatchTable(masm);
+   __ Ldrb(x23, MemOperand(kInterpreterBytecodeArrayRegister,
+                           kInterpreterBytecodeOffsetRegister));
+   __ Mov(x1, Operand(x23, LSL, kSystemPointerSizeLog2));
+@@ -1953,14 +2005,10 @@ void Builtins::Generate_InterpreterPushArgsThenFastConstructFunction(
+ }
+ 
+ static void Generate_InterpreterEnterBytecode(MacroAssembler* masm) {
+-  // Initialize the dispatch table register.
+-  __ Mov(
+-      kInterpreterDispatchTableRegister,
+-      ExternalReference::interpreter_dispatch_table_address(masm->isolate()));
+-
+   // Get the bytecode array pointer from the frame.
+   __ Ldr(kInterpreterBytecodeArrayRegister,
+          MemOperand(fp, InterpreterFrameConstants::kBytecodeArrayFromFp));
++  XTraceSelectDispatchTable(masm);
+ 
+   if (v8_flags.debug_code) {
+     // Check function data field is actually a BytecodeArray object.
+diff --git a/src/builtins/builtins-definitions.h b/src/builtins/builtins-definitions.h
+index e1180fc..975c805 100644
+--- a/src/builtins/builtins-definitions.h
++++ b/src/builtins/builtins-definitions.h
+@@ -342,6 +342,7 @@ constexpr int kGearboxGenericBuiltinIdOffset = -2;
+       InterpreterPushArgsThenConstruct)                                        \
+   ASM(InterpreterEnterAtBytecode, Void)                                        \
+   ASM(InterpreterEnterAtNextBytecode, Void)                                    \
++  TFC(InterpreterTraceDispatch, InterpreterDispatch)                       \
+   ASM(InterpreterOnStackReplacement, OnStackReplacement)                       \
+                                                                                \
+   /* Baseline Compiler */                                                      \
+diff --git a/src/builtins/x64/builtins-x64.cc b/src/builtins/x64/builtins-x64.cc
+index 2e62bb4..c4540bd 100644
+--- a/src/builtins/x64/builtins-x64.cc
++++ b/src/builtins/x64/builtins-x64.cc
+@@ -1058,6 +1058,62 @@ void ResetFeedbackVectorOsrUrgency(MacroAssembler* masm,
+ 
+ }  // namespace
+ 
++
++// Select the clean or traced Ignition table. When --xtrace-bytecode is off
++// this is one not-taken branch. A one-entry cache skips the runtime for
++// functions that do not match the script/function filters.
++static void XTraceSelectDispatchTable(MacroAssembler* masm) {
++  Label use_clean, use_traced, slow, ready, matched, store;
++  __ Move(rcx, ExternalReference::address_of_xtrace_bytecode_enabled());
++  __ movzxbq(rcx, Operand(rcx, 0));
++  __ testq(rcx, rcx);
++  __ j(zero, &use_clean, Label::kFar);
++
++  __ Move(rcx, ExternalReference::xtrace_bytecode_array_cache_address(
++                   masm->isolate()));
++  __ movq(rdx, Operand(rcx, 0));
++  __ cmpq(rdx, kInterpreterBytecodeArrayRegister);
++  __ j(not_equal, &slow, Label::kFar);
++  __ Move(rcx, ExternalReference::xtrace_decision_cache_address(masm->isolate()));
++  __ movzxbq(rdx, Operand(rcx, 0));
++  __ testq(rdx, rdx);
++  __ j(not_equal, &use_traced, Label::kFar);
++  __ jmp(&use_clean, Label::kFar);
++
++  __ bind(&slow);
++  __ pushq(kInterpreterAccumulatorRegister);
++  __ Push(kInterpreterBytecodeArrayRegister);
++  __ CallRuntime(Runtime::kXTraceSelectDispatchTable, 1);
++  __ movq(rcx, rax);
++  __ popq(kInterpreterAccumulatorRegister);
++  __ movq(kInterpreterBytecodeArrayRegister,
++          Operand(rbp, InterpreterFrameConstants::kBytecodeArrayFromFp));
++  __ cmpq(rcx, Immediate(Smi::FromInt(1)));
++  __ j(equal, &matched, Label::kNear);
++  __ xorq(rcx, rcx);
++  __ jmp(&store, Label::kNear);
++  __ bind(&matched);
++  __ movq(rcx, Immediate(1));
++  __ bind(&store);
++  __ Move(rdx, ExternalReference::xtrace_bytecode_array_cache_address(
++                   masm->isolate()));
++  __ movq(Operand(rdx, 0), kInterpreterBytecodeArrayRegister);
++  __ Move(rdx, ExternalReference::xtrace_decision_cache_address(masm->isolate()));
++  __ movb(Operand(rdx, 0), rcx);
++  __ testq(rcx, rcx);
++  __ j(not_equal, &use_traced, Label::kFar);
++
++  __ bind(&use_clean);
++  __ Move(kInterpreterDispatchTableRegister,
++          ExternalReference::interpreter_dispatch_table_address(masm->isolate()));
++  __ jmp(&ready);
++  __ bind(&use_traced);
++  __ Move(kInterpreterDispatchTableRegister,
++          ExternalReference::interpreter_traced_dispatch_table_address(
++              masm->isolate()));
++  __ bind(&ready);
++}
++
+ // Generate code for entering a JS function with the interpreter.
+ // On entry to the function the receiver and arguments have been pushed on the
+ // stack left to right.
+@@ -1219,9 +1275,7 @@ void Builtins::Generate_InterpreterEntryTrampoline(
+   // handler at the current bytecode offset.
+   Label do_dispatch;
+   __ bind(&do_dispatch);
+-  __ Move(
+-      kInterpreterDispatchTableRegister,
+-      ExternalReference::interpreter_dispatch_table_address(masm->isolate()));
++  XTraceSelectDispatchTable(masm);
+   __ movzxbq(kScratchRegister,
+              Operand(kInterpreterBytecodeArrayRegister,
+                      kInterpreterBytecodeOffsetRegister, times_1, 0));
+@@ -1755,14 +1809,10 @@ static void Generate_InterpreterEnterBytecode(MacroAssembler* masm) {
+   __ addq(rbx, Immediate(interpreter_entry_return_pc_offset.value()));
+   __ movq(kScratchRegister, rbx);
+ 
+-  // Initialize dispatch table register.
+-  __ Move(
+-      kInterpreterDispatchTableRegister,
+-      ExternalReference::interpreter_dispatch_table_address(masm->isolate()));
+-
+   // Get the bytecode array pointer from the frame.
+   __ movq(kInterpreterBytecodeArrayRegister,
+           Operand(rbp, InterpreterFrameConstants::kBytecodeArrayFromFp));
++  XTraceSelectDispatchTable(masm);
+ 
+   if (v8_flags.debug_code) {
+     // Check function data field is actually a BytecodeArray object.
+diff --git a/src/codegen/external-reference.cc b/src/codegen/external-reference.cc
+index 71da3f0..3e2a91e 100644
+--- a/src/codegen/external-reference.cc
++++ b/src/codegen/external-reference.cc
+@@ -352,6 +352,24 @@ ExternalReference ExternalReference::interpreter_dispatch_table_address(
+   return ExternalReference(isolate->interpreter()->dispatch_table_address());
+ }
+ 
++ExternalReference ExternalReference::interpreter_traced_dispatch_table_address(
++    Isolate* isolate) {
++  return ExternalReference(
++      isolate->interpreter()->traced_dispatch_table_address());
++}
++
++ExternalReference ExternalReference::xtrace_bytecode_array_cache_address(
++    Isolate* isolate) {
++  return ExternalReference(
++      isolate->interpreter()->address_of_xtrace_bytecode_array_cache());
++}
++
++ExternalReference ExternalReference::xtrace_decision_cache_address(
++    Isolate* isolate) {
++  return ExternalReference(
++      isolate->interpreter()->address_of_xtrace_decision_cache());
++}
++
+ ExternalReference
+ ExternalReference::address_of_interpreter_entry_trampoline_instruction_start(
+     Isolate* isolate) {
+@@ -869,6 +887,12 @@ ExternalReference ExternalReference::address_of_builtin_subclassing_flag() {
+   return ExternalReference(&v8_flags.builtin_subclassing);
+ }
+ 
++ExternalReference ExternalReference::address_of_xtrace_bytecode_enabled() {
++  // FlagValue<bool> stores the bool as its first member. The interpreter
++  // loads that byte on every bytecode; the flag stays off unless set.
++  return ExternalReference(&v8_flags.xtrace_bytecode);
++}
++
+ ExternalReference ExternalReference::address_of_runtime_stats_flag() {
+   return ExternalReference(&TracingFlags::runtime_stats);
+ }
+diff --git a/src/codegen/external-reference.h b/src/codegen/external-reference.h
+index e9387c6..c57e726 100644
+--- a/src/codegen/external-reference.h
++++ b/src/codegen/external-reference.h
+@@ -31,6 +31,12 @@ enum class IsolateFieldId : uint8_t;
+   V(address_of_interpreter_entry_trampoline_instruction_start,                 \
+     "Address of the InterpreterEntryTrampoline instruction start")             \
+   V(interpreter_dispatch_table_address, "Interpreter::dispatch_table_address") \
++  V(interpreter_traced_dispatch_table_address,                              \
++    "Interpreter::traced_dispatch_table_address")                           \
++  V(xtrace_bytecode_array_cache_address,                                    \
++    "Interpreter::address_of_xtrace_bytecode_array_cache")                  \
++  V(xtrace_decision_cache_address,                                          \
++    "Interpreter::address_of_xtrace_decision_cache")                        \
+   V(force_slow_path, "Isolate::force_slow_path_address()")                     \
+   V(isolate_root, "Isolate::isolate_root()")                                   \
+   V(allocation_sites_list_address, "Heap::allocation_sites_list_address()")    \
+@@ -101,6 +107,7 @@ enum class IsolateFieldId : uint8_t;
+   V(abort_with_sandbox_violation, "abort_with_sandbox_violation")              \
+   V(address_of_log_or_trace_osr, "v8_flags.log_or_trace_osr")                  \
+   V(address_of_builtin_subclassing_flag, "v8_flags.builtin_subclassing")       \
++  V(address_of_xtrace_bytecode_enabled, "v8_flags.xtrace_bytecode")             \
+   V(address_of_double_abs_constant, "double_absolute_constant")                \
+   V(address_of_double_neg_constant, "double_negate_constant")                  \
+   V(address_of_enable_experimental_regexp_engine,                              \
 diff --git a/src/flags/flag-definitions.h b/src/flags/flag-definitions.h
+index bf210a5..c0f20f3 100644
 --- a/src/flags/flag-definitions.h
 +++ b/src/flags/flag-definitions.h
-@@ -1290,6 +1290,27 @@
- DEFINE_DEVELOPER_FLAG(
+@@ -1291,6 +1291,27 @@ DEFINE_DEVELOPER_FLAG(
      trace_ignition_codegen,
      "trace the codegen of ignition interpreter bytecode handlers")
  
-+// XTrace Ignition single-step. The handler branch loads the bool at
-+// runtime so a snapshot built with the flag off can still turn it on.
++// XTrace Ignition single-step. Entry trampolines load this bool once
++// per return to the trampoline. Bytecode handlers stay unchanged.
 +DEFINE_BOOL(xtrace_bytecode, false,
 +            "xtrace: record Ignition bytecode steps via the event logger")
 +DEFINE_STRING(xtrace_bytecode_scripts, nullptr,
@@ -29,39 +294,548 @@ diff --git a/src/flags/flag-definitions.h b/src/flags/flag-definitions.h
 +
  DEFINE_DEVELOPER_FLAG(trace_track_allocation_sites,
                        "trace the tracking of allocation sites")
-diff --git a/src/codegen/external-reference.h b/src/codegen/external-reference.h
---- a/src/codegen/external-reference.h
-+++ b/src/codegen/external-reference.h
-@@ -102,3 +102,4 @@
-   V(address_of_log_or_trace_osr, "v8_flags.log_or_trace_osr")                  \
-   V(address_of_builtin_subclassing_flag, "v8_flags.builtin_subclassing")       \
-+  V(address_of_xtrace_bytecode_enabled, "v8_flags.xtrace_bytecode")             \
-   V(address_of_double_abs_constant, "double_absolute_constant")                \
-diff --git a/src/codegen/external-reference.cc b/src/codegen/external-reference.cc
---- a/src/codegen/external-reference.cc
-+++ b/src/codegen/external-reference.cc
-@@ -868,5 +868,11 @@
- ExternalReference ExternalReference::address_of_builtin_subclassing_flag() {
-   return ExternalReference(&v8_flags.builtin_subclassing);
+ DEFINE_DEVELOPER_FLAG(trace_migration, "trace object migration")
+diff --git a/src/interpreter/interpreter-assembler.cc b/src/interpreter/interpreter-assembler.cc
+index 024b7e9..1e6701d 100644
+--- a/src/interpreter/interpreter-assembler.cc
++++ b/src/interpreter/interpreter-assembler.cc
+@@ -12,6 +12,7 @@
+ #include "src/codegen/code-stub-assembler-inl.h"
+ #include "src/codegen/interface-descriptors-inl.h"
+ #include "src/codegen/machine-type.h"
++#include "src/codegen/external-reference.h"
+ #include "src/interpreter/bytecodes.h"
+ #include "src/interpreter/interpreter.h"
+ #include "src/objects/objects-inl.h"
+@@ -1597,6 +1598,28 @@ void InterpreterAssembler::OnStackReplacement(
+   }
  }
  
-+ExternalReference ExternalReference::address_of_xtrace_bytecode_enabled() {
-+  // FlagValue<bool> stores the bool as its first member. The interpreter
-+  // loads that byte on every bytecode; the flag stays off unless set.
-+  return ExternalReference(&v8_flags.xtrace_bytecode);
++void InterpreterAssembler::EmitXTraceDispatchStub() {
++  // One runtime step, then tail-call the clean handler. The traced
++  // dispatch table stays in the dispatch-table parameter so the next
++  // bytecode re-enters this stub. Inlined short Stars are not steps.
++  TNode<BytecodeArray> bytecode_array = BytecodeArrayTaggedPointer();
++  TNode<IntPtrT> offset = BytecodeOffset();
++  TNode<Object> accumulator = GetAccumulatorUnchecked();
++  CallRuntime(Runtime::kXTraceBytecodeStep, GetContext(), bytecode_array,
++              SmiTag(offset), accumulator);
++  bytecode_array = BytecodeArrayTaggedPointer();
++  offset = BytecodeOffset();
++  accumulator = GetAccumulatorUnchecked();
++  TNode<ExternalReference> clean = ExternalConstant(
++      ExternalReference::interpreter_dispatch_table_address(isolate()));
++  TNode<WordT> bytecode = LoadBytecode(offset);
++  TNode<RawPtrT> target =
++      Load<RawPtrT>(clean, TimesSystemPointerSize(bytecode));
++  TailCallBytecodeDispatch(InterpreterDispatchDescriptor{}, target,
++                           accumulator, offset, bytecode_array,
++                           DispatchTablePointer());
 +}
 +
- ExternalReference ExternalReference::address_of_runtime_stats_flag() {
+ void InterpreterAssembler::TraceBytecode(Runtime::FunctionId function_id) {
+   CallRuntime(function_id, GetContext(), BytecodeArrayTaggedPointer(),
+               SmiTag(BytecodeOffset()), GetAccumulatorUnchecked());
+@@ -1810,5 +1833,15 @@ void InterpreterAssembler::ToNumberOrNumeric(Object::Conversion mode) {
+ #include "src/codegen/undef-code-stub-assembler-macros.inc"
+ 
+ }  // namespace interpreter
++
++void Builtins::Generate_InterpreterTraceDispatch(
++    compiler::CodeAssemblerState* state) {
++  // kWide has no implicit register use, so the stub can tail-call
++  // without writing the accumulator.
++  interpreter::InterpreterAssembler assembler(
++      state, interpreter::Bytecode::kWide, interpreter::OperandScale::kSingle);
++  assembler.EmitXTraceDispatchStub();
++}
++
+ }  // namespace internal
+ }  // namespace v8
+diff --git a/src/interpreter/interpreter-assembler.h b/src/interpreter/interpreter-assembler.h
+index 47591e1..df37a85 100644
+--- a/src/interpreter/interpreter-assembler.h
++++ b/src/interpreter/interpreter-assembler.h
+@@ -384,6 +384,9 @@ class V8_EXPORT_PRIVATE InterpreterAssembler : public CodeStubAssembler {
+   void CallPrologue();
+   void CallEpilogue();
+ 
++  // XTrace traced-dispatch stub: one step, then the clean handler.
++  void EmitXTraceDispatchStub();
++
+   // Traces the current bytecode by calling |function_id|.
+   void TraceBytecode(Runtime::FunctionId function_id);
+ 
+diff --git a/src/interpreter/interpreter.cc b/src/interpreter/interpreter.cc
+index 0278e8f..eb522e6 100644
+--- a/src/interpreter/interpreter.cc
++++ b/src/interpreter/interpreter.cc
+@@ -64,8 +64,11 @@ class InterpreterCompilationJob final : public UnoptimizedCompilationJob {
+ 
+ Interpreter::Interpreter(Isolate* isolate)
+     : isolate_(isolate),
++      xtrace_cached_bytecode_array_(kNullAddress),
++      xtrace_cached_decision_(0),
+       interpreter_entry_trampoline_instruction_start_(kNullAddress) {
+   memset(dispatch_table_, 0, sizeof(dispatch_table_));
++  memset(dispatch_table_traced_, 0, sizeof(dispatch_table_traced_));
+ }
+ 
+ namespace {
+@@ -387,6 +390,12 @@ void Interpreter::Initialize() {
+ 
+     SetBytecodeHandler(bytecode, operand_scale, handler);
+   });
++  Tagged<Code> trace_stub =
++      builtins->code(Builtin::kInterpreterTraceDispatch);
++  Address trace_entry = trace_stub->instruction_start();
++  for (int i = 0; i < kDispatchTableSize; ++i) {
++    dispatch_table_traced_[i] = trace_entry;
++  }
+   DCHECK(IsDispatchTableInitialized());
+ }
+ 
+diff --git a/src/interpreter/interpreter.h b/src/interpreter/interpreter.h
+index 0c74104..74a034b 100644
+--- a/src/interpreter/interpreter.h
++++ b/src/interpreter/interpreter.h
+@@ -91,6 +91,18 @@ class Interpreter {
+     return reinterpret_cast<Address>(&dispatch_table_[0]);
+   }
+ 
++  Address traced_dispatch_table_address() {
++    return reinterpret_cast<Address>(&dispatch_table_traced_[0]);
++  }
++
++  Address address_of_xtrace_bytecode_array_cache() {
++    return reinterpret_cast<Address>(&xtrace_cached_bytecode_array_);
++  }
++
++  Address address_of_xtrace_decision_cache() {
++    return reinterpret_cast<Address>(&xtrace_cached_decision_);
++  }
++
+   Address address_of_interpreter_entry_trampoline_instruction_start() const {
+     return reinterpret_cast<Address>(
+         &interpreter_entry_trampoline_instruction_start_);
+@@ -111,10 +123,16 @@ class Interpreter {
+ 
+   Isolate* isolate_;
+   Address dispatch_table_[kDispatchTableSize];
++  Address dispatch_table_traced_[kDispatchTableSize];
++  Address xtrace_cached_bytecode_array_;
++  uint8_t xtrace_cached_decision_;
+   Address interpreter_entry_trampoline_instruction_start_;
+ };
+ 
+ }  // namespace interpreter
++
++// Drops a buffered Ignition step batch into the embedder event logger.
++V8_EXPORT_PRIVATE void XTraceFlushBytecodeBatch();
+ }  // namespace internal
+ }  // namespace v8
+ 
+diff --git a/src/runtime/runtime-trace.cc b/src/runtime/runtime-trace.cc
+index 1e3f6ed..1c9b299 100644
+--- a/src/runtime/runtime-trace.cc
++++ b/src/runtime/runtime-trace.cc
+@@ -4,6 +4,18 @@
+ 
+ #include <iomanip>
+ 
++#include <atomic>
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <mutex>
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "include/v8-callbacks.h"
+ #include "src/execution/arguments-inl.h"
+ #include "src/execution/frames-inl.h"
+ #include "src/execution/isolate-inl.h"
+@@ -21,6 +33,12 @@
+ #endif
+ #include "src/utils/ostreams.h"
+ 
++#include "src/codegen/bailout-reason.h"
++#include "src/numbers/conversions.h"
++#include "src/objects/objects-inl.h"
++#include "src/objects/script-inl.h"
++#include "src/objects/shared-function-info-inl.h"
++
+ namespace v8 {
+ namespace internal {
+ 
+@@ -277,5 +295,350 @@ RUNTIME_FUNCTION(Runtime_DumpExecutionFrame) {
+ 
+ #endif  //  V8_DUMPLING
+ 
++namespace {
++
++constexpr size_t kBatchBytes = 24 * 1024;
++constexpr int kBatchRecords = 8;
++constexpr int kPrefixBytes = 768;
++
++struct Prefix {
++  Address key = 0;
++  char text[kPrefixBytes];
++  int len = 0;
++  bool values = true;
++  bool summary = false;
++};
++
++thread_local Prefix g_prefix;
++thread_local char g_batch[kBatchBytes];
++thread_local int g_len = 0;
++thread_local int g_records = 0;
++thread_local uint32_t g_emitted = 0;
++thread_local std::atomic<uint32_t> g_sample{0};
++thread_local uint32_t g_dropped = 0;
++thread_local bool g_in_step = false;
++thread_local bool g_flushing = false;
++
++uint64_t g_allow[4];
++uint64_t g_deny[4];
++std::once_flag g_bits_once;
++
++bool Contains(const char* haystack, const char* needle) {
++  if (!needle || !needle[0]) return true;
++  if (!haystack) return false;
++  return std::strstr(haystack, needle) != nullptr;
++}
++
++bool ExactToken(const char* list, const char* token) {
++  if (!list || !list[0]) return false;
++  size_t n = std::strlen(token);
++  const char* p = list;
++  while (*p) {
++    while (*p == ',') ++p;
++    const char* start = p;
++    while (*p && *p != ',') ++p;
++    if (static_cast<size_t>(p - start) == n && std::memcmp(start, token, n) == 0) {
++      return true;
++    }
++  }
++  return false;
++}
++
++void SetBit(uint64_t* bits, unsigned id) {
++  if (id < 256) bits[id >> 6] |= uint64_t{1} << (id & 63);
++}
++
++void FillAll(uint64_t* bits) {
++  bits[0] = bits[1] = bits[2] = bits[3] = ~uint64_t{0};
++}
++
++void BuildOpcodeBits() {
++  FillAll(g_allow);
++  std::memset(g_deny, 0, sizeof(g_deny));
++  const char* allow = v8_flags.xtrace_bytecode_opcodes;
++  const char* deny = v8_flags.xtrace_bytecode_opcode_deny;
++  if (allow && allow[0]) {
++    std::memset(g_allow, 0, sizeof(g_allow));
++    for (int i = 0; i < static_cast<int>(interpreter::Bytecode::kLast) + 1; ++i) {
++      auto bc = static_cast<interpreter::Bytecode>(i);
++      if (ExactToken(allow, interpreter::Bytecodes::ToString(bc))) {
++        SetBit(g_allow, static_cast<unsigned>(i));
++      }
++    }
++  }
++  if (deny && deny[0]) {
++    for (int i = 0; i < static_cast<int>(interpreter::Bytecode::kLast) + 1; ++i) {
++      auto bc = static_cast<interpreter::Bytecode>(i);
++      if (ExactToken(deny, interpreter::Bytecodes::ToString(bc))) {
++        SetBit(g_deny, static_cast<unsigned>(i));
++      }
++    }
++  }
++}
++
++bool OpcodeAllowed(unsigned id) {
++  std::call_once(g_bits_once, BuildOpcodeBits);
++  if (id >= 256) return false;
++  uint64_t bit = uint64_t{1} << (id & 63);
++  return (g_allow[id >> 6] & bit) && !(g_deny[id >> 6] & bit);
++}
++
++int EscapeJson(const char* in, char* out, int cap) {
++  int n = 0;
++  auto put = [&](char c) {
++    if (n + 1 >= cap) return false;
++    out[n++] = c;
++    return true;
++  };
++  if (!put('"')) return -1;
++  for (const unsigned char* p = reinterpret_cast<const unsigned char*>(in); *p; ++p) {
++    if (*p == '"' || *p == '\\') {
++      if (!put('\\') || !put(static_cast<char>(*p))) return -1;
++    } else if (*p < 0x20) {
++      if (n + 6 >= cap) return -1;
++      n += std::snprintf(out + n, cap - n, "\\u%04x", *p);
++    } else if (!put(static_cast<char>(*p))) {
++      return -1;
++    }
++  }
++  if (!put('"')) return -1;
++  out[n] = '\0';
++  return n;
++}
++
++bool FillPrefix(Isolate* isolate, Handle<BytecodeArray> bytecode_array) {
++  g_prefix.key = 0;
++  g_prefix.len = 0;
++  g_prefix.values = true;
++  g_prefix.summary = false;
++  const char* mode = v8_flags.xtrace_bytecode_values;
++  if (mode && std::strcmp(mode, "args-only") == 0) g_prefix.values = false;
++  if (mode && std::strcmp(mode, "summary") == 0) g_prefix.summary = true;
++
++  JavaScriptStackFrameIterator frames(isolate);
++  if (frames.done() || !frames.frame()->is_interpreted()) return false;
++  UnoptimizedJSFrame* frame = UnoptimizedJSFrame::cast(frames.frame());
++  Handle<JSFunction> function(frame->function(), isolate);
++  Handle<SharedFunctionInfo> shared(function->shared(), isolate);
++  if (!shared->all_optimization_disabled()) {
++    shared->DisableOptimization(isolate, BailoutReason::kNeverOptimize);
++  }
++  int literal_id = shared->function_literal_id(kRelaxedLoad);
++  int script_id = 0;
++  Tagged<Object> script_obj = shared->script();
++  if (IsScript(script_obj)) script_id = Cast<Script>(script_obj)->id();
++  std::string url;
++  std::string function_name =
++      Handle<String>(shared->Name(), isolate)->ToStdString();
++  if (IsScript(script_obj)) {
++    Tagged<Object> label = Cast<Script>(script_obj)->GetNameOrSourceURL();
++    if (IsString(label)) {
++      url = Handle<String>(Cast<String>(label), isolate)->ToStdString();
++    }
++  }
++  if (!Contains(url.c_str(), v8_flags.xtrace_bytecode_scripts) ||
++      !Contains(function_name.c_str(), v8_flags.xtrace_bytecode_functions)) {
++    return false;
++  }
++  const char* fname = function_name.c_str();
++
++  char url_json[160];
++  char name_json[96];
++  if (EscapeJson(url.c_str(), url_json, sizeof(url_json)) < 0) {
++    std::snprintf(url_json, sizeof(url_json), "\"\"");
++  }
++  if (EscapeJson(fname, name_json, sizeof(name_json)) < 0) {
++    std::snprintf(name_json, sizeof(name_json), "\"\"");
++  }
++  const char* capture = g_prefix.summary ? "summary"
++                         : g_prefix.values ? "full"
++                                           : "args-only";
++  int n = std::snprintf(
++      g_prefix.text, sizeof(g_prefix.text),
++      "[{\"kind\":\"vm_step\",\"pre_state\":true,\"capture_values\":\"%s\","
++      "\"value_truncated\":false,\"script_id\":%d,\"script_url\":%s,"
++      "\"function_name\":%s,\"function_literal_id\":%d,",
++      capture, script_id, url_json, name_json, literal_id);
++  if (n <= 0 || n >= static_cast<int>(sizeof(g_prefix.text))) return false;
++  g_prefix.len = n;
++  g_prefix.key = bytecode_array->ptr();
++  return true;
++}
++
++void XTraceFlushBytecodeBatchInternal(Isolate* isolate) {
++  if (g_flushing || !isolate || !isolate->event_logger()) return;
++  if (g_len == 0 && g_dropped == 0) return;
++  g_flushing = true;
++  std::string msg;
++  msg.reserve(static_cast<size_t>(g_len) + 96);
++  msg.append("xtrace:bytecode-batch:\n");
++  if (g_dropped) {
++    char drop[96];
++    int n = std::snprintf(drop, sizeof(drop),
++                          "Ignition.drop\t[{\"kind\":\"vm_step_drop\",\"dropped\":%u}]\n",
++                          g_dropped);
++    if (n > 0) msg.append(drop, static_cast<size_t>(n));
++    g_dropped = 0;
++  }
++  if (g_len > 0) msg.append(g_batch, static_cast<size_t>(g_len));
++  g_len = 0;
++  g_records = 0;
++  isolate->event_logger()(msg.c_str(), v8::LogEventStatus::kLog);
++  g_flushing = false;
++}
++
++bool AppendRecord(Isolate* isolate, const char* rec, int n) {
++  if (n <= 0) return false;
++  if (g_len + n >= static_cast<int>(kBatchBytes)) {
++    XTraceFlushBytecodeBatchInternal(isolate);
++  }
++  if (g_len + n >= static_cast<int>(kBatchBytes)) {
++    g_dropped++;
++    return false;
++  }
++  std::memcpy(g_batch + g_len, rec, static_cast<size_t>(n));
++  g_len += n;
++  g_records++;
++  if (g_records >= kBatchRecords) XTraceFlushBytecodeBatchInternal(isolate);
++  return true;
++}
++
++const char* ScaleName(int scale) {
++  if (scale == 2) return "Double";
++  if (scale == 4) return "Quadruple";
++  return "Single";
++}
++
++}  // namespace
++
++void XTraceFlushBytecodeBatch() {
++  Isolate* isolate = Isolate::Current();
++  if (isolate == nullptr) return;
++  XTraceFlushBytecodeBatchInternal(isolate);
++}
++
++RUNTIME_FUNCTION(Runtime_XTraceSelectDispatchTable) {
++  HandleScope scope(isolate);
++  DCHECK_EQ(1, args.length());
++  if (!IsBytecodeArray(args[0])) return Smi::FromInt(0);
++  if (g_in_step) return Smi::FromInt(0);
++  XTraceFlushBytecodeBatchInternal(isolate);
++  Handle<BytecodeArray> bytecode_array = CheckedCast<BytecodeArray>(args.at(0));
++  if (!FillPrefix(isolate, bytecode_array)) return Smi::FromInt(0);
++  return Smi::FromInt(1);
++}
++
++RUNTIME_FUNCTION(Runtime_XTraceBytecodeStep) {
++  DCHECK_EQ(3, args.length());
++  if (g_in_step || g_flushing) return ReadOnlyRoots(isolate).undefined_value();
++  if (!IsBytecodeArray(args[0])) return ReadOnlyRoots(isolate).undefined_value();
++  Handle<BytecodeArray> bytecode_array = CheckedCast<BytecodeArray>(args.at(0));
++  int raw_offset = args.smi_value_at(1);
++  int offset = raw_offset - (BytecodeArray::kHeaderSize - kHeapObjectTag);
++  int length = bytecode_array->length();
++  if (offset < 0 || offset >= length) return ReadOnlyRoots(isolate).undefined_value();
++  uint8_t* bytes =
++      reinterpret_cast<uint8_t*>(bytecode_array->GetFirstBytecodeAddress());
++  unsigned opcode = bytes[offset];
++  if (opcode == static_cast<unsigned>(interpreter::Bytecode::kWide) ||
++      opcode == static_cast<unsigned>(interpreter::Bytecode::kExtraWide)) {
++    return ReadOnlyRoots(isolate).undefined_value();
++  }
++  if (!OpcodeAllowed(opcode)) return ReadOnlyRoots(isolate).undefined_value();
++
++  uint32_t budget = v8_flags.xtrace_bytecode_budget;
++  if (budget && g_emitted >= budget) {
++    g_dropped++;
++    // Flush a pending step batch immediately, then coalesce later drops.
++    if (!g_flushing &&
++        (g_len > 0 || g_dropped >= static_cast<uint32_t>(kBatchRecords))) {
++      XTraceFlushBytecodeBatchInternal(isolate);
++    }
++    return ReadOnlyRoots(isolate).undefined_value();
++  }
++  uint32_t sample = v8_flags.xtrace_bytecode_sample ? v8_flags.xtrace_bytecode_sample : 1;
++  uint32_t ticket = g_sample.fetch_add(1, std::memory_order_relaxed);
++  if (sample > 1 && (ticket % sample) != 0) {
++    return ReadOnlyRoots(isolate).undefined_value();
++  }
++
++  g_in_step = true;
++  if (bytecode_array->ptr() != g_prefix.key) {
++    HandleScope scope(isolate);
++    FillPrefix(isolate, bytecode_array);
++  }
++  if (bytecode_array->ptr() != g_prefix.key || g_prefix.len <= 0) {
++    g_dropped++;
++    g_in_step = false;
++    return ReadOnlyRoots(isolate).undefined_value();
++  }
++
++  int scale = 1;
++  if (offset > 0 && bytes[offset - 1] == static_cast<uint8_t>(interpreter::Bytecode::kWide)) {
++    scale = 2;
++  } else if (offset > 0 &&
++             bytes[offset - 1] == static_cast<uint8_t>(interpreter::Bytecode::kExtraWide)) {
++    scale = 4;
++  }
++  auto bc = static_cast<interpreter::Bytecode>(opcode);
++  const char* opname = interpreter::Bytecodes::ToString(bc);
++
++  char rec[1024];
++  int used = 0;
++  if (g_prefix.len < static_cast<int>(sizeof(rec))) {
++    std::memcpy(rec, g_prefix.text, static_cast<size_t>(g_prefix.len));
++    used = g_prefix.len;
++  }
++  int room = static_cast<int>(sizeof(rec)) - used;
++  int n = std::snprintf(rec + used, room,
++                        "\"bytecode_offset\":%d,\"opcode\":\"%s\","
++                        "\"operand_scale\":\"%s\",\"operands\":[",
++                        offset, opname, ScaleName(scale));
++  if (n < 0 || n >= room) {
++    g_in_step = false;
++    return ReadOnlyRoots(isolate).undefined_value();
++  }
++  used += n;
++  if (bc == interpreter::Bytecode::kLdaZero) {
++    n = std::snprintf(rec + used, sizeof(rec) - used,
++                      "{\"index\":0,\"type\":\"Imm\",\"value\":0}");
++    if (n > 0 && used + n < static_cast<int>(sizeof(rec))) used += n;
++  } else if (bc == interpreter::Bytecode::kLdaSmi && offset + scale < length) {
++    int32_t imm = 0;
++    std::memcpy(&imm, bytes + offset + 1, static_cast<size_t>(scale == 4 ? 4 : scale));
++    if (scale == 1) imm = static_cast<int8_t>(imm);
++    if (scale == 2) imm = static_cast<int16_t>(imm);
++    n = std::snprintf(rec + used, sizeof(rec) - used,
++                      "{\"index\":0,\"type\":\"Imm\",\"value\":%d}", imm);
++    if (n > 0 && used + n < static_cast<int>(sizeof(rec))) used += n;
++  }
++  n = std::snprintf(rec + used, sizeof(rec) - used, "]");
++  if (n > 0 && used + n < static_cast<int>(sizeof(rec))) used += n;
++
++  n = 0;
++  if (g_prefix.values) {
++    Tagged<Object> acc = args[2];
++    if (IsSmi(acc)) {
++      n = std::snprintf(rec + used, sizeof(rec) - used,
++                        ",\"accumulator_type\":\"smi\",\"accumulator\":%d",
++                        Smi::ToInt(Cast<Smi>(acc)));
++    } else if (IsNumber(acc)) {
++      n = std::snprintf(rec + used, sizeof(rec) - used,
++                        ",\"accumulator_type\":\"number\",\"accumulator\":%.17g",
++                        Object::NumberValue(acc));
++    } else if (IsString(acc)) {
++      n = std::snprintf(rec + used, sizeof(rec) - used,
++                        ",\"accumulator_type\":\"string\",\"accumulator_length\":%u",
++                        Cast<String>(acc)->length());
++    }
++    if (n > 0 && used + n < static_cast<int>(sizeof(rec))) used += n;
++  }
++  n = std::snprintf(rec + used, sizeof(rec) - used, "}]\n");
++  if (n > 0 && used + n < static_cast<int>(sizeof(rec))) used += n;
++  g_emitted++;
++  AppendRecord(isolate, rec, used);
++  g_in_step = false;
++  return ReadOnlyRoots(isolate).undefined_value();
++}
+ }  // namespace internal
+ }  // namespace v8
 diff --git a/src/runtime/runtime.h b/src/runtime/runtime.h
+index 2d7628d..d9a200d 100644
 --- a/src/runtime/runtime.h
 +++ b/src/runtime/runtime.h
-@@ -210,10 +210,15 @@ constexpr bool CanTriggerGC(T... properties) {
+@@ -210,10 +210,18 @@ constexpr bool CanTriggerGC(T... properties) {
  #define FOR_EACH_INTRINSIC_TRACE_FEEDBACK(F, I)
  #endif
  
-+// XTrace bytecode steps are always linked. The interpreter calls the
-+// runtime only when v8_flags.xtrace_bytecode is set.
-+#define FOR_EACH_INTRINSIC_XTRACE_BYTECODE(F, I) F(XTraceBytecodeStep, 3, 1)
++// XTrace bytecode steps are always linked. Entry trampolines call
++// XTraceSelectDispatchTable once per function; the traced dispatch
++// stub calls XTraceBytecodeStep.
++#define FOR_EACH_INTRINSIC_XTRACE_BYTECODE(F, I) \
++  F(XTraceSelectDispatchTable, 1, 1)             \
++  F(XTraceBytecodeStep, 3, 1)
 +
  #define FOR_EACH_INTRINSIC_TRACE(F, I)       \
    FOR_EACH_INTRINSIC_TRACE_UNOPTIMIZED(F, I) \
@@ -72,673 +846,3 @@ diff --git a/src/runtime/runtime.h b/src/runtime/runtime.h
  
  #define FOR_EACH_INTRINSIC_FUNCTION(F, I)  \
    F(Call, -1 /* >= 2 */, 1)                \
-diff --git a/src/interpreter/interpreter-assembler.h b/src/interpreter/interpreter-assembler.h
---- a/src/interpreter/interpreter-assembler.h
-+++ b/src/interpreter/interpreter-assembler.h
-@@ -385,4 +385,7 @@
-   void CallEpilogue();
- 
-+  // XTrace: one predicted-not-taken flag load, then Runtime::kXTraceBytecodeStep.
-+  void MaybeTraceXTraceBytecode();
-+
-   // Traces the current bytecode by calling |function_id|.
-   void TraceBytecode(Runtime::FunctionId function_id);
-diff --git a/src/interpreter/interpreter-assembler.cc b/src/interpreter/interpreter-assembler.cc
---- a/src/interpreter/interpreter-assembler.cc
-+++ b/src/interpreter/interpreter-assembler.cc
-@@ -14,3 +14,4 @@
- #include "src/codegen/interface-descriptors-inl.h"
- #include "src/codegen/machine-type.h"
-+#include "src/codegen/external-reference.h"
- #include "src/interpreter/bytecodes.h"
-@@ -55,5 +55,7 @@
- #ifdef V8_DUMPLING
-   TraceBytecode(Runtime::kDumpExecutionFrame);
- #endif
- 
-+  MaybeTraceXTraceBytecode();
-+
-   RegisterCallGenerationCallbacks([this] { CallPrologue(); },
-@@ -1377,5 +1377,7 @@
- #ifdef V8_DUMPLING
-   TraceBytecode(Runtime::kDumpExecutionFrame);
- #endif
- 
-+  MaybeTraceXTraceBytecode();
-+
-   StoreRegisterForShortStar(GetAccumulator(), target_bytecode);
-@@ -1598,3 +1598,14 @@
- }
- 
-+void InterpreterAssembler::MaybeTraceXTraceBytecode() {
-+  // v8_flags is read when the handler runs, not when this builtin is
-+  // generated, so the snapshot does not have to be rebuilt to opt in.
-+  Label skip(this);
-+  GotoIfNot(LoadRuntimeFlag(
-+                ExternalReference::address_of_xtrace_bytecode_enabled()),
-+            &skip);
-+  TraceBytecode(Runtime::kXTraceBytecodeStep);
-+  BIND(&skip);
-+}
-+
- void InterpreterAssembler::TraceBytecode(Runtime::FunctionId function_id) {
-diff --git a/src/runtime/runtime-trace.cc b/src/runtime/runtime-trace.cc
---- a/src/runtime/runtime-trace.cc
-+++ b/src/runtime/runtime-trace.cc
-@@ -4,3 +4,14 @@
- #include <iomanip>
- 
-+#include <atomic>
-+#include <cmath>
-+#include <cstdint>
-+#include <cstdio>
-+#include <cstring>
-+#include <string>
-+#include <string_view>
-+#include <utility>
-+#include <vector>
-+
-+#include "include/v8-callbacks.h"
- #include "src/execution/arguments-inl.h"
-@@ -22,3 +22,9 @@
- #include "src/utils/ostreams.h"
- 
-+#include "src/codegen/bailout-reason.h"
-+#include "src/numbers/conversions.h"
-+#include "src/objects/objects-inl.h"
-+#include "src/objects/script-inl.h"
-+#include "src/objects/shared-function-info-inl.h"
-+
- namespace v8 {
-@@ -278,4 +278,591 @@
- #endif  //  V8_DUMPLING
- 
-+namespace {
-+
-+struct TruncState {
-+  bool any = false;
-+  size_t original_size = 0;
-+  int count = 0;
-+  std::string preview;
-+  std::string hash;
-+};
-+
-+struct IdentityCache {
-+  bool valid = false;
-+  Isolate* isolate = nullptr;
-+  int script_id = 0;
-+  int literal_id = 0;
-+  bool matches = false;
-+  std::string url;
-+  std::string name;
-+};
-+
-+struct CapturedReg {
-+  std::string name;
-+  Handle<Object> value;
-+};
-+
-+std::atomic<uint64_t> g_xtrace_bytecode_emitted{0};
-+std::atomic<uint64_t> g_xtrace_bytecode_matched{0};
-+thread_local IdentityCache g_xtrace_bytecode_identity;
-+thread_local bool g_xtrace_bytecode_in_hook = false;
-+
-+struct XTraceBytecodeReentry {
-+  explicit XTraceBytecodeReentry(bool* flag) : flag_(flag) { *flag_ = true; }
-+  ~XTraceBytecodeReentry() { *flag_ = false; }
-+  bool* flag_;
-+};
-+
-+Tagged<Object> XTraceBytecodeUndefined(Isolate* isolate) {
-+  return ReadOnlyRoots(isolate).undefined_value();
-+}
-+
-+void AppendJsonString(std::string* out, std::string_view text) {
-+  out->push_back('"');
-+  for (unsigned char c : text) {
-+    switch (c) {
-+      case '"':
-+        out->append("\\\"");
-+        break;
-+      case '\\':
-+        out->append("\\\\");
-+        break;
-+      case '\n':
-+        out->append("\\n");
-+        break;
-+      case '\r':
-+        out->append("\\r");
-+        break;
-+      case '\t':
-+        out->append("\\t");
-+        break;
-+      default:
-+        if (c < 0x20) {
-+          char buf[8];
-+          std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-+          out->append(buf);
-+        } else {
-+          out->push_back(static_cast<char>(c));
-+        }
-+    }
-+  }
-+  out->push_back('"');
-+}
-+
-+std::string Fnv1a64(std::string_view data) {
-+  uint64_t hash = 14695981039346656037ull;
-+  for (unsigned char c : data) {
-+    hash ^= c;
-+    hash *= 1099511628211ull;
-+  }
-+  char buf[32];
-+  std::snprintf(buf, sizeof(buf), "fnv1a64:%016llx",
-+                static_cast<unsigned long long>(hash));
-+  return buf;
-+}
-+
-+void NoteTruncation(TruncState* trunc, size_t original_size, std::string preview,
-+                    std::string hash) {
-+  trunc->count++;
-+  if (!trunc->any || original_size > trunc->original_size) {
-+    trunc->original_size = original_size;
-+    trunc->preview = std::move(preview);
-+    trunc->hash = std::move(hash);
-+  }
-+  trunc->any = true;
-+}
-+
-+std::string_view NextFilterToken(std::string_view* rest) {
-+  if (rest->empty()) return {};
-+  size_t comma = rest->find(',');
-+  std::string_view token = rest->substr(
-+      0, comma == std::string_view::npos ? rest->size() : comma);
-+  if (comma == std::string_view::npos) {
-+    *rest = {};
-+  } else {
-+    rest->remove_prefix(comma + 1);
-+  }
-+  while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) {
-+    token.remove_prefix(1);
-+  }
-+  while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) {
-+    token.remove_suffix(1);
-+  }
-+  return token;
-+}
-+
-+bool SubstringListMatches(const char* list, std::string_view text) {
-+  if (list == nullptr || list[0] == '\0') return true;
-+  std::string_view rest(list);
-+  bool saw_token = false;
-+  while (!rest.empty()) {
-+    std::string_view token = NextFilterToken(&rest);
-+    if (token.empty()) continue;
-+    saw_token = true;
-+    if (text.find(token) != std::string_view::npos) return true;
-+  }
-+  return !saw_token;
-+}
-+
-+bool ExactListContains(const char* list, std::string_view text) {
-+  if (list == nullptr || list[0] == '\0') return false;
-+  std::string_view rest(list);
-+  while (!rest.empty()) {
-+    std::string_view token = NextFilterToken(&rest);
-+    if (!token.empty() && token == text) return true;
-+  }
-+  return false;
-+}
-+
-+const char* BytecodeValueMode() {
-+  const char* mode = v8_flags.xtrace_bytecode_values;
-+  if (mode != nullptr && (std::strcmp(mode, "full") == 0 ||
-+                          std::strcmp(mode, "summary") == 0 ||
-+                          std::strcmp(mode, "args-only") == 0)) {
-+    return mode;
-+  }
-+  return "full";
-+}
-+
-+unsigned BytecodeMaxChars() {
-+  unsigned max_chars = v8_flags.xtrace_bytecode_max_chars;
-+  return max_chars == 0 ? 512 : max_chars;
-+}
-+
-+const char* OperandTypeName(interpreter::OperandType type) {
-+  switch (type) {
-+    case interpreter::OperandType::kNone:
-+      return "None";
-+    case interpreter::OperandType::kFlag8:
-+      return "Flag8";
-+    case interpreter::OperandType::kFlag16:
-+      return "Flag16";
-+    case interpreter::OperandType::kIntrinsicId:
-+      return "IntrinsicId";
-+    case interpreter::OperandType::kRuntimeId:
-+      return "RuntimeId";
-+    case interpreter::OperandType::kNativeContextIndex:
-+      return "NativeContextIndex";
-+    case interpreter::OperandType::kAbortReason:
-+      return "AbortReason";
-+    case interpreter::OperandType::kEmbeddedFeedback:
-+      return "EmbeddedFeedback";
-+    case interpreter::OperandType::kConstantPoolIndex:
-+      return "ConstantPoolIndex";
-+    case interpreter::OperandType::kFeedbackSlot:
-+      return "FeedbackSlot";
-+    case interpreter::OperandType::kContextSlot:
-+      return "ContextSlot";
-+    case interpreter::OperandType::kCoverageSlot:
-+      return "CoverageSlot";
-+    case interpreter::OperandType::kUImm:
-+      return "UImm";
-+    case interpreter::OperandType::kRegCount:
-+      return "RegCount";
-+    case interpreter::OperandType::kImm:
-+      return "Imm";
-+    case interpreter::OperandType::kReg:
-+      return "Reg";
-+    case interpreter::OperandType::kRegList:
-+      return "RegList";
-+    case interpreter::OperandType::kRegPair:
-+      return "RegPair";
-+    case interpreter::OperandType::kRegOut:
-+      return "RegOut";
-+    case interpreter::OperandType::kRegOutList:
-+      return "RegOutList";
-+    case interpreter::OperandType::kRegOutPair:
-+      return "RegOutPair";
-+    case interpreter::OperandType::kRegOutTriple:
-+      return "RegOutTriple";
-+    case interpreter::OperandType::kRegInOut:
-+      return "RegInOut";
-+  }
-+  return "Unknown";
-+}
-+
-+const char* OperandScaleName(interpreter::OperandScale scale) {
-+  switch (scale) {
-+    case interpreter::OperandScale::kDouble:
-+      return "Double";
-+    case interpreter::OperandScale::kQuadruple:
-+      return "Quadruple";
-+    default:
-+      return "Single";
-+  }
-+}
-+
-+const char* ValueTypeName(Tagged<Object> value) {
-+  if (IsSmi(value)) return "smi";
-+  if (IsHeapNumber(value)) return "number";
-+  if (IsString(value)) return "string";
-+  if (IsTrue(value) || IsFalse(value)) return "boolean";
-+  if (IsNull(value)) return "null";
-+  if (IsUndefined(value)) return "undefined";
-+  if (IsBigInt(value)) return "bigint";
-+  if (IsSymbol(value)) return "symbol";
-+  if (IsJSFunction(value)) return "function";
-+  if (IsJSArray(value)) return "array";
-+  if (IsJSReceiver(value)) return "object";
-+  return "value";
-+}
-+
-+std::string JsonLiteral(Handle<Object> value) {
-+  Tagged<Object> raw = *value;
-+  if (IsSmi(raw)) return std::to_string(Smi::ToInt(raw));
-+  if (IsHeapNumber(raw)) {
-+    double number = Object::NumberValue(raw);
-+    if (!std::isfinite(number)) {
-+      if (std::isnan(number)) return "\"NaN\"";
-+      return number > 0 ? "\"Infinity\"" : "\"-Infinity\"";
-+    }
-+    char buf[kDoubleToStringMinBufferSize];
-+    std::string_view text = DoubleToStringView(
-+        number, base::Vector<char>(buf, static_cast<int>(sizeof(buf))));
-+    return std::string(text);
-+  }
-+  if (IsTrue(raw)) return "true";
-+  if (IsFalse(raw)) return "false";
-+  if (IsNull(raw)) return "null";
-+  if (IsUndefined(raw)) return "\"undefined\"";
-+  return "null";
-+}
-+
-+void AppendCapturedValue(std::string* out, Handle<Object> value, const char* mode,
-+                         TruncState* trunc, const char* type_key,
-+                         const char* value_key, const char* length_key) {
-+  Tagged<Object> raw = *value;
-+  out->append(",\"");
-+  out->append(type_key);
-+  out->append("\":");
-+  AppendJsonString(out, ValueTypeName(raw));
-+  if (IsString(raw)) {
-+    Handle<String> string = Cast<String>(value);
-+    if (std::strcmp(mode, "summary") == 0) {
-+      out->append(",\"");
-+      out->append(length_key);
-+      out->append("\":");
-+      out->append(std::to_string(string->length()));
-+      return;
-+    }
-+    std::string text = string->ToStdString();
-+    unsigned max_chars = BytecodeMaxChars();
-+    if (text.size() > max_chars) {
-+      std::string preview = text.substr(0, std::min<size_t>(text.size(), 64));
-+      NoteTruncation(trunc, text.size(), preview, Fnv1a64(text));
-+      text = std::move(preview);
-+    }
-+    out->append(",\"");
-+    out->append(value_key);
-+    out->append("\":");
-+    AppendJsonString(out, text);
-+    return;
-+  }
-+  out->append(",\"");
-+  out->append(value_key);
-+  out->append("\":");
-+  out->append(JsonLiteral(value));
-+}
-+
-+void ConsiderRegister(Isolate* isolate, UnoptimizedJSFrame* frame,
-+                      interpreter::Register reg, std::vector<CapturedReg>* captured,
-+                      int* total) {
-+  ++*total;
-+  if (static_cast<int>(captured->size()) >= 8) return;
-+  captured->push_back(CapturedReg{
-+      reg.ToString(),
-+      Handle<Object>(frame->ReadInterpreterRegister(reg.index()), isolate)});
-+}
-+
-+uint32_t UnsignedOperand(const interpreter::BytecodeArrayIterator& it,
-+                         interpreter::OperandType type, int index) {
-+  switch (type) {
-+    case interpreter::OperandType::kFlag8:
-+      return it.GetFlag8Operand(index);
-+    case interpreter::OperandType::kFlag16:
-+      return it.GetFlag16Operand(index);
-+    case interpreter::OperandType::kUImm:
-+      return it.GetUnsignedImmediateOperand(index);
-+    case interpreter::OperandType::kRegCount:
-+      return it.GetRegisterCountOperand(index);
-+    case interpreter::OperandType::kContextSlot:
-+      return it.GetContextSlotOperand(index);
-+    case interpreter::OperandType::kCoverageSlot:
-+      return it.GetCoverageSlotOperand(index);
-+    case interpreter::OperandType::kFeedbackSlot:
-+      return it.GetFeedbackSlotOperand(index);
-+    case interpreter::OperandType::kNativeContextIndex:
-+      return it.GetNativeContextIndexOperand(index);
-+    case interpreter::OperandType::kConstantPoolIndex:
-+      return it.GetConstantPoolIndexOperand(index);
-+    case interpreter::OperandType::kRuntimeId:
-+      return static_cast<uint32_t>(it.GetRuntimeIdOperand(index));
-+    case interpreter::OperandType::kIntrinsicId:
-+      return static_cast<uint32_t>(it.GetIntrinsicIdOperand(index));
-+    case interpreter::OperandType::kAbortReason:
-+      return static_cast<uint32_t>(it.GetAbortReasonOperand(index));
-+    case interpreter::OperandType::kEmbeddedFeedback:
-+      return it.GetEmbeddedFeedback(index);
-+    default:
-+      return 0;
-+  }
-+}
-+
-+}  // namespace
-+
-+// Opt-in Ignition step. Handler entry (and inlined short Star) calls this only
-+// when v8_flags.xtrace_bytecode is set. Values are the pre-instruction state.
-+RUNTIME_FUNCTION(Runtime_XTraceBytecodeStep) {
-+  if (!v8_flags.xtrace_bytecode || isolate->serializer_enabled() ||
-+      isolate->event_logger() == nullptr) {
-+    return XTraceBytecodeUndefined(isolate);
-+  }
-+  unsigned budget = v8_flags.xtrace_bytecode_budget;
-+  if (budget > 0 &&
-+      g_xtrace_bytecode_emitted.load(std::memory_order_relaxed) >= budget) {
-+    return XTraceBytecodeUndefined(isolate);
-+  }
-+  if (g_xtrace_bytecode_in_hook) return XTraceBytecodeUndefined(isolate);
-+  XTraceBytecodeReentry reentry(&g_xtrace_bytecode_in_hook);
-+
-+  HandleScope scope(isolate);
-+  if (args.length() != 3 || !IsBytecodeArray(args[0])) {
-+    return XTraceBytecodeUndefined(isolate);
-+  }
-+  JavaScriptStackFrameIterator frames(isolate);
-+  if (frames.done()) return XTraceBytecodeUndefined(isolate);
-+  JavaScriptFrame* js_frame = frames.frame();
-+  if (!js_frame->is_interpreted()) return XTraceBytecodeUndefined(isolate);
-+  UnoptimizedJSFrame* frame = UnoptimizedJSFrame::cast(js_frame);
-+
-+  Handle<JSFunction> function(frame->function(), isolate);
-+  Handle<SharedFunctionInfo> shared(function->shared(), isolate);
-+  int literal_id = shared->function_literal_id(kRelaxedLoad);
-+  int script_id = 0;
-+  Tagged<Object> script_obj = shared->script();
-+  if (IsScript(script_obj)) script_id = Cast<Script>(script_obj)->id();
-+
-+  std::string url;
-+  std::string function_name;
-+  IdentityCache& cached = g_xtrace_bytecode_identity;
-+  if (cached.valid && cached.isolate == isolate &&
-+      cached.script_id == script_id && cached.literal_id == literal_id) {
-+    if (!cached.matches) return XTraceBytecodeUndefined(isolate);
-+    url = cached.url;
-+    function_name = cached.name;
-+  } else {
-+    function_name = Handle<String>(shared->Name(), isolate)->ToStdString();
-+    if (IsScript(script_obj)) {
-+      Handle<Script> script(Cast<Script>(script_obj), isolate);
-+      Tagged<Object> label = script->GetNameOrSourceURL();
-+      if (IsString(label)) {
-+        url = Handle<String>(Cast<String>(label), isolate)->ToStdString();
-+      }
-+    }
-+    bool matches =
-+        SubstringListMatches(v8_flags.xtrace_bytecode_scripts, url) &&
-+        SubstringListMatches(v8_flags.xtrace_bytecode_functions, function_name);
-+    cached = IdentityCache{true,     isolate, script_id, literal_id,
-+                           matches, url,     function_name};
-+    if (!matches) return XTraceBytecodeUndefined(isolate);
-+  }
-+
-+  if (!shared->all_optimization_disabled()) {
-+    shared->DisableOptimization(isolate, BailoutReason::kNeverOptimize);
-+  }
-+
-+  // Identity and DisableOptimization can allocate. Re-read the frame before
-+  // touching interpreter registers so a GC cannot leave the pointer stale.
-+  JavaScriptStackFrameIterator live_frames(isolate);
-+  if (live_frames.done() || !live_frames.frame()->is_interpreted()) {
-+    return XTraceBytecodeUndefined(isolate);
-+  }
-+  frame = UnoptimizedJSFrame::cast(live_frames.frame());
-+
-+  Handle<BytecodeArray> bytecode_array =
-+      CheckedCast<BytecodeArray>(args.at(0));
-+  int raw_offset = args.smi_value_at(1);
-+  int offset = raw_offset - BytecodeArray::kHeaderSize + kHeapObjectTag;
-+  if (offset < 0) return XTraceBytecodeUndefined(isolate);
-+  interpreter::BytecodeArrayIterator iterator(bytecode_array, offset);
-+  if (iterator.done() || iterator.current_offset() != offset) {
-+    return XTraceBytecodeUndefined(isolate);
-+  }
-+  interpreter::Bytecode bytecode = iterator.current_bytecode();
-+  if (interpreter::Bytecodes::IsPrefixScalingBytecode(bytecode)) {
-+    return XTraceBytecodeUndefined(isolate);
-+  }
-+  const char* opcode = interpreter::Bytecodes::ToString(bytecode);
-+  const char* opcode_allow = v8_flags.xtrace_bytecode_opcodes;
-+  const char* opcode_deny = v8_flags.xtrace_bytecode_opcode_deny;
-+  if (ExactListContains(opcode_deny, opcode) ||
-+      (opcode_allow != nullptr && opcode_allow[0] != '\0' &&
-+       !ExactListContains(opcode_allow, opcode))) {
-+    return XTraceBytecodeUndefined(isolate);
-+  }
-+
-+  unsigned sample = v8_flags.xtrace_bytecode_sample;
-+  if (sample < 1) sample = 1;
-+  uint64_t match_index =
-+      g_xtrace_bytecode_matched.fetch_add(1, std::memory_order_relaxed);
-+  if (sample > 1 && (match_index % sample) != 0) {
-+    return XTraceBytecodeUndefined(isolate);
-+  }
-+
-+  const char* mode = BytecodeValueMode();
-+  bool capture_values = std::strcmp(mode, "args-only") != 0;
-+  TruncState trunc;
-+  Handle<Object> accumulator = args.at(2);
-+  std::vector<CapturedReg> captured;
-+  int register_total = 0;
-+  std::string operands = "[";
-+  bool first_operand = true;
-+  int operand_count = interpreter::Bytecodes::NumberOfOperands(bytecode);
-+  for (int i = 0; i < operand_count; ++i) {
-+    interpreter::OperandType type =
-+        interpreter::Bytecodes::GetOperandType(bytecode, i);
-+    if (!first_operand) operands.push_back(',');
-+    first_operand = false;
-+    operands.append("{\"index\":");
-+    operands.append(std::to_string(i));
-+    operands.append(",\"type\":");
-+    AppendJsonString(&operands, OperandTypeName(type));
-+    if (interpreter::Bytecodes::IsRegisterOperandType(type)) {
-+      if (type == interpreter::OperandType::kRegList ||
-+          type == interpreter::OperandType::kRegOutList) {
-+        interpreter::RegisterList list = iterator.GetRegisterListOperand(i);
-+        int count = list.register_count();
-+        if (count > 0) {
-+          operands.append(",\"name\":");
-+          AppendJsonString(&operands, list.first_register().ToString());
-+          operands.append(",\"count\":");
-+          operands.append(std::to_string(count));
-+          if (capture_values) {
-+            for (int reg_index = 0; reg_index < count; ++reg_index) {
-+              ConsiderRegister(isolate, frame, list[reg_index], &captured,
-+                               &register_total);
-+            }
-+          }
-+        }
-+      } else {
-+        interpreter::Register first = iterator.GetRegisterOperand(i);
-+        uint32_t represented =
-+            interpreter::Bytecodes::GetNumberOfRegistersRepresentedBy(type);
-+        operands.append(",\"name\":");
-+        AppendJsonString(&operands, first.ToString());
-+        if (capture_values) {
-+          for (uint32_t reg_index = 0; reg_index < represented; ++reg_index) {
-+            ConsiderRegister(
-+                isolate, frame,
-+                interpreter::Register(first.index() + static_cast<int>(reg_index)),
-+                &captured, &register_total);
-+          }
-+        }
-+      }
-+    } else if (type == interpreter::OperandType::kImm) {
-+      operands.append(",\"value\":");
-+      operands.append(std::to_string(iterator.GetImmediateOperand(i)));
-+    } else if (type == interpreter::OperandType::kConstantPoolIndex) {
-+      operands.append(",\"value\":");
-+      operands.append(
-+          std::to_string(iterator.GetConstantPoolIndexOperand(i)));
-+      if (capture_values) {
-+        Handle<Object> constant = iterator.GetConstantForOperand(i, isolate);
-+        AppendCapturedValue(&operands, constant, mode, &trunc, "constant_type",
-+                            "constant", "constant_length");
-+      }
-+    } else if (type != interpreter::OperandType::kNone) {
-+      operands.append(",\"value\":");
-+      operands.append(std::to_string(UnsignedOperand(iterator, type, i)));
-+    }
-+    operands.push_back('}');
-+  }
-+  if (interpreter::Bytecodes::IsShortStar(bytecode)) {
-+    interpreter::Register reg = interpreter::Register::FromShortStar(bytecode);
-+    if (!first_operand) operands.push_back(',');
-+    operands.append("{\"index\":0,\"type\":\"RegOut\",\"name\":");
-+    AppendJsonString(&operands, reg.ToString());
-+    operands.push_back('}');
-+    if (capture_values) {
-+      ConsiderRegister(isolate, frame, reg, &captured, &register_total);
-+    }
-+  }
-+  operands.push_back(']');
-+  if (register_total > static_cast<int>(captured.size())) {
-+    std::string preview;
-+    for (const CapturedReg& reg : captured) {
-+      if (!preview.empty()) preview.push_back(',');
-+      preview.append(reg.name);
-+      if (preview.size() >= 64) break;
-+    }
-+    NoteTruncation(&trunc, static_cast<size_t>(register_total), preview,
-+                   Fnv1a64(std::to_string(register_total)));
-+  }
-+
-+  std::string args_json = "[{\"kind\":\"vm_step\",\"pre_state\":true,\"capture_values\":";
-+  AppendJsonString(&args_json, mode);
-+  args_json.append(",\"script_id\":");
-+  args_json.append(std::to_string(script_id));
-+  args_json.append(",\"script_url\":");
-+  AppendJsonString(&args_json, url);
-+  args_json.append(",\"function_name\":");
-+  AppendJsonString(&args_json, function_name);
-+  args_json.append(",\"function_literal_id\":");
-+  args_json.append(std::to_string(literal_id));
-+  args_json.append(",\"bytecode_offset\":");
-+  args_json.append(std::to_string(offset));
-+  args_json.append(",\"opcode\":");
-+  AppendJsonString(&args_json, opcode);
-+  args_json.append(",\"operand_scale\":");
-+  AppendJsonString(&args_json, OperandScaleName(iterator.current_operand_scale()));
-+  args_json.append(",\"operands\":");
-+  args_json.append(operands);
-+  if (capture_values) {
-+    AppendCapturedValue(&args_json, accumulator, mode, &trunc, "accumulator_type",
-+                        "accumulator", "accumulator_length");
-+    if (!captured.empty()) {
-+      args_json.append(",\"registers\":[");
-+      for (size_t i = 0; i < captured.size(); ++i) {
-+        if (i != 0) args_json.push_back(',');
-+        args_json.append("{\"name\":");
-+        AppendJsonString(&args_json, captured[i].name);
-+        AppendCapturedValue(&args_json, captured[i].value, mode, &trunc, "type",
-+                            "value", "value_length");
-+        args_json.push_back('}');
-+      }
-+      args_json.push_back(']');
-+    }
-+  }
-+  args_json.append(",\"value_truncated\":");
-+  args_json.append(trunc.any ? "true" : "false");
-+  args_json.append("}]");
-+
-+  if (budget > 0) {
-+    uint64_t ticket =
-+        g_xtrace_bytecode_emitted.fetch_add(1, std::memory_order_relaxed);
-+    if (ticket >= budget) return XTraceBytecodeUndefined(isolate);
-+  } else {
-+    g_xtrace_bytecode_emitted.fetch_add(1, std::memory_order_relaxed);
-+  }
-+
-+  std::string message = "xtrace:bytecode:Ignition.step\n";
-+  message.append(args_json);
-+  message.push_back('\n');
-+  if (trunc.any) {
-+    message.append("{\"original_size\":");
-+    message.append(std::to_string(trunc.original_size));
-+    message.append(",\"preview\":");
-+    AppendJsonString(&message, trunc.preview);
-+    message.append(",\"hash\":");
-+    AppendJsonString(&message, trunc.hash);
-+    if (trunc.count > 1) {
-+      message.append(",\"truncated_value_count\":");
-+      message.append(std::to_string(trunc.count));
-+    }
-+    message.push_back('}');
-+  }
-+  isolate->event_logger()(message.c_str(), v8::LogEventStatus::kLog);
-+  return XTraceBytecodeUndefined(isolate);
-+}
- }  // namespace internal
- }  // namespace v8

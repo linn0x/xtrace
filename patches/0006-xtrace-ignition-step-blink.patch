@@ -105,3 +105,140 @@ diff --git a/third_party/blink/renderer/platform/xtrace/xtrace_logger.h b/third_
    static void LogEventNoStackWithContext(const char* category,
                                           const char* phase,
                                           const char* api,
+diff --git a/third_party/blink/renderer/bindings/core/v8/v8_initializer.cc b/third_party/blink/renderer/bindings/core/v8/v8_initializer.cc
+--- a/third_party/blink/renderer/bindings/core/v8/v8_initializer.cc
++++ b/third_party/blink/renderer/bindings/core/v8/v8_initializer.cc
+@@ -112,6 +112,12 @@
+ #include "v8/include/v8-profiler.h"
+ #include "v8/include/v8.h"
+ 
++namespace v8 {
++namespace internal {
++void XTraceFlushBytecodeBatch();
++}  // namespace internal
++}  // namespace v8
++
+ #if defined(V8_USE_EXTERNAL_STARTUP_DATA)
+ #include "gin/public/v8_snapshot_file_type.h"
+ #endif
+@@ -184,6 +190,11 @@
+   }
+ 
+   std::string_view event(name);
++  // Keep earlier bytecode steps ahead of this record. Batch messages must
++  // not flush again or the logger re-enters itself.
++  if (!event.starts_with("xtrace:bytecode")) {
++    v8::internal::XTraceFlushBytecodeBatch();
++  }
+   constexpr std::string_view kFingerprintPrefix = "xtrace:fingerprint:";
+   if (event.starts_with(kFingerprintPrefix)) {
+     event.remove_prefix(kFingerprintPrefix.size());
+@@ -214,6 +225,13 @@
+     return;
+   }
+ 
++  constexpr std::string_view kBytecodeBatchPrefix = "xtrace:bytecode-batch:\n";
++  if (event.starts_with(kBytecodeBatchPrefix)) {
++    event.remove_prefix(kBytecodeBatchPrefix.size());
++    XTraceLogger::LogBytecodeBatch(String::FromUtf8WithLatin1Fallback(event));
++    return;
++  }
++
+   constexpr std::string_view kBytecodePrefix = "xtrace:bytecode:";
+   if (event.starts_with(kBytecodePrefix)) {
+     event.remove_prefix(kBytecodePrefix.size());
+diff --git a/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc b/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
+--- a/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
++++ b/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
+@@ -30,6 +30,7 @@
+ #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
+ #include "third_party/blink/public/mojom/xtrace/xtrace.mojom-blink.h"
+ #include "third_party/blink/public/platform/platform.h"
++#include "third_party/blink/renderer/platform/wtf/vector.h"
+ #include "v8/include/v8.h"
+ 
+ namespace blink {
+@@ -455,7 +456,8 @@
+                           std::string_view frame_url,
+                           std::string_view origin,
+                           const CausalityFields* causal_fields = nullptr,
+-                          std::string_view truncation_json = {}) {
++                          std::string_view truncation_json = {},
++                          std::vector<std::string>* batch = nullptr) {
+   const int64_t wall_time_us =
+       (base::Time::Now() - base::Time::UnixEpoch()).InMicroseconds();
+   const int64_t mono_time_us =
+@@ -523,8 +525,10 @@
+   }
+   line.append("}\n");
+ 
+-  // LogBatch is intentionally not used yet; per-event Log keeps current
+-  // ordering/compatibility until renderer-side buffering lands.
++  if (batch) {
++    batch->push_back(std::move(line));
++    return;
++  }
+   GetXTraceHost()->Log(String::FromUtf8(line));
+ }
+ 
+@@ -687,6 +691,48 @@
+                        std::string_view(), nullptr, truncation_utf8);
+ }
+ 
++void XTraceLogger::LogBytecodeBatch(const String& payload) {
++  const XTraceConfig& config = GetCachedConfig();
++  if (!CategoryEnabled(config, "bytecode")) {
++    return;
++  }
++  std::string text = payload.Utf8();
++  std::string_view rest(text);
++  std::vector<std::string> lines;
++  while (!rest.empty()) {
++    size_t nl = rest.find('\n');
++    std::string_view row = nl == std::string_view::npos ? rest : rest.substr(0, nl);
++    if (nl == std::string_view::npos) {
++      rest = std::string_view();
++    } else {
++      rest.remove_prefix(nl + 1);
++    }
++    if (row.empty()) {
++      continue;
++    }
++    size_t tab = row.find('\t');
++    if (tab == std::string_view::npos || tab == 0 || tab + 1 >= row.size()) {
++      continue;
++    }
++    std::string api(row.substr(0, tab));
++    std::string_view args = row.substr(tab + 1);
++    const uint64_t seq = NextSequenceNumber();
++    LogEventWithSequence(config, "bytecode", "call", api.c_str(),
++                         String::FromUtf8WithLatin1Fallback(args), seq,
++                         std::string_view(), false, std::string_view(),
++                         std::string_view(), nullptr, std::string_view(),
++                         &lines);
++  }
++  if (lines.empty()) {
++    return;
++  }
++  Vector<String> batch;
++  for (const std::string& line : lines) {
++    batch.push_back(String::FromUtf8(line));
++  }
++  GetXTraceHost()->LogBatch(std::move(batch));
++}
++
+ void XTraceLogger::LogEventNoStackWithContext(const char* category,
+                                               const char* phase,
+                                               const char* api,
+diff --git a/third_party/blink/renderer/platform/xtrace/xtrace_logger.h b/third_party/blink/renderer/platform/xtrace/xtrace_logger.h
+--- a/third_party/blink/renderer/platform/xtrace/xtrace_logger.h
++++ b/third_party/blink/renderer/platform/xtrace/xtrace_logger.h
+@@ -49,6 +49,8 @@
+                                             const char* api,
+                                             const String& args_json,
+                                             const String& truncation_json);
++  // payload is Ignition.step<TAB>args-json lines, one record per line.
++  static void LogBytecodeBatch(const String& payload);
+   static void LogEventNoStackWithContext(const char* category,
+                                          const char* phase,
+                                          const char* api,

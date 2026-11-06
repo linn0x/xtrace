@@ -10,35 +10,41 @@ This tree was not compiled against the pinned Chromium revision. The patch match
 
 V8's `--trace-ignition` prints bytecode to stdout, but the calls are emitted only when the interpreter builtins are generated with `V8_TRACE_UNOPTIMIZED`. A snapshot built without that define ignores the flag. Rebuilding the snapshot for every capture is the wrong switch for a session flag.
 
-`patches/0005-xtrace-ignition-step.patch` instead emits, at the start of every Ignition handler and in the inlined short-`Star` path, a load of `v8_flags.xtrace_bytecode` (`LoadRuntimeFlag` on `ExternalReference::address_of_xtrace_bytecode_enabled`). The flag word is the first byte of `FlagValue<bool>`. When it is zero the handler branches past `Runtime_XTraceBytecodeStep`. When it is set, the runtime function decodes the bytecode array at the current offset — the same inputs as `Runtime_TraceUnoptimizedBytecodeEntry` — and sends one event through `isolate->event_logger()`.
+`patches/0005-xtrace-ignition-step.patch` leaves every bytecode handler unchanged. Ignition keeps a second dispatch table whose slots all point at one stub, `InterpreterTraceDispatch`. On arm64 and x64 the interpreter entry trampoline (and the return path back to that trampoline) picks a table:
 
-That entry point is one site for every opcode, including wide variants, and it sees the bytecode the handler is about to run. Debug-break stepping was not used: it depends on the debugger, rewrites bytecode, and perturbs timing more than a flag check. Per-opcode hooks in Torque or each CSA handler would be a much larger, easier-to-miss patch against this pinned revision.
+- Flag byte is zero: one not-taken branch, then the clean table. Handlers run exactly as upstream.
+- Flag is on: a one-entry cache of the bytecode-array pointer. A miss calls `Runtime_XTraceSelectDispatchTable` once. A non-matching function is cached as "clean" and is not pinned, so it can still tier up. A match is cached as "traced".
+- Traced dispatch runs the stub, which calls `Runtime_XTraceBytecodeStep` and tail-calls the clean handler through the traced table, so the next bytecode re-enters the stub.
 
-`patches/0006-xtrace-ignition-step-blink.patch` parses the `xtrace:bytecode:` prefix in the existing V8 event logger and writes the NDJSON line with `XTraceLogger`, so `seq` / `mono_time_us` and schema v2 causality stay on the renderer path. The renderer sandbox stays on; the line still crosses `blink.mojom.XTraceHost`.
+Wide and extra-wide prefixes are not logged; the stub tail-calls the real wide handler, which then dispatches the scaled opcode through the traced table. Inlined short `Star`s inside a clean handler are not separate steps. Other architectures keep the clean table only, so this patch does not trace them and does not add a per-bytecode check.
+
+The step runtime does not allocate on the common path. Opcode allow and deny lists are a 256-bit set built once. Sampling and the step budget run before any formatting. Identity JSON is built once per matched function into a fixed buffer. Each step `memcpy`s that prefix and `snprintf`s the offset, opcode, scale, and a limited value (smi and number in full, string length only). Records sit in a thread-local buffer and flush about every eight steps as one `xtrace:bytecode-batch:` message. Drops (budget, or a record that does not fit) are counted and emitted as `Ignition.drop`.
+
+`patches/0006-xtrace-ignition-step-blink.patch` turns that batch into one `XTraceHost::LogBatch`. Before any other V8 log line, Blink calls `XTraceFlushBytecodeBatch()` so later events stay after the steps. The renderer sandbox stays on.
 
 ### JIT tiers
 
-Sparkplug, Maglev, and TurboFan do not run Ignition bytecode. The first time a function passes the script and function filters, the runtime calls `SharedFunctionInfo::DisableOptimization(kNeverOptimize)` so later tier-up does not drop that function out of Ignition. Other functions still tier up.
+Sparkplug, Maglev, and TurboFan do not run Ignition bytecode. Only a function that matches the script and function filters is pinned with `SharedFunctionInfo::DisableOptimization(kNeverOptimize)`. A cached non-match stays eligible for tier-up.
 
 The first execution of a function is Ignition unless the process was started with `always_sparkplug` or an equivalent. Code that already tiered up before the filter matched is not stepped until it is deoptimized. Unfiltered `--xtrace-bytecode` pins every function that runs, because every function matches.
 
 ### Overhead and caps
 
-With the flag off, each bytecode still executes one predicted-not-taken load and branch. That cost is in the patched binary even when tracing is disabled; it is the price of a runtime switch that does not rebuild the snapshot.
+With the flag off, the only added instruction stream is one predicted-not-taken branch each time execution returns to the entry trampoline, not once per bytecode. The handlers themselves are the upstream handlers.
 
-With the flag on, every interpreted bytecode of every function enters the runtime. Script, function, and opcode filters return before JSON formatting, and a one-entry cache skips repeat string work for the current function. The step budget stops emission. It does not clear `v8_flags.xtrace_bytecode`: V8 may freeze the flag page after startup, so a later store can fault. After the budget, the runtime returns immediately and the branch remains.
+With the flag on but the function filtered out, the next entries hit the cache and take the clean table. They do not enter the step runtime.
 
-Value capture follows `--xtrace-capture-values` unless `--xtrace-bytecode-values` is set:
+With the flag on and the function matching, each bytecode (except a wide prefix and an inlined short `Star`) enters the step runtime. The opcode bitset, sample counter, and budget run before the fixed-buffer format. The step budget stops emission. It does not clear `v8_flags.xtrace_bytecode`: V8 may freeze the flag page after startup, so a later store can fault. Steps past the budget increment a drop counter. `Ignition.drop` carries `{"kind":"vm_step_drop","dropped":N}`.
+
+Value capture follows `--xtrace-capture-values` unless `--xtrace-bytecode-values` is set. The hot path does not copy string text and does not walk operand registers:
 
 | Mode | What is recorded |
 | --- | --- |
-| `full` | Accumulator and operand-register values. Strings longer than `--xtrace-bytecode-max-chars` set `truncated: true` and top-level `truncation` (`original_size`, `preview`, `hash`). |
-| `summary` | Types, numeric and boolean values, and string lengths. No string text and no truncation flag. |
-| `args-only` | Opcode, offset, immediate operands, and register names. No accumulator and no register values. |
+| `full` | Smi and number accumulators. A string accumulator is `accumulator_type: "string"` plus `accumulator_length`, with `truncated: false`. |
+| `summary` | Same limited accumulator. String accumulators are length only. |
+| `args-only` | Opcode, offset, and `LdaSmi` / `LdaZero` immediates. No accumulator. |
 
-Register values are the pre-instruction state (handler entry). At most eight registers are formatted; a wider list sets `truncated`. `hash` is `fnv1a64:` plus 16 hex digits of FNV-1a over the original UTF-8 bytes, not SHA-1.
-
-Objects, symbols, and bigints are recorded by type. Printing them would re-enter JavaScript.
+`operands` is empty except for `LdaSmi` and `LdaZero`. Other objects are omitted rather than printed, so the step path does not re-enter JavaScript. `--xtrace-bytecode-max-chars` remains on the flag list; this path does not use it because it does not copy string bytes. A batch can hold the last few steps until the next flush (another batch, a non-bytecode V8 event, or the next function select).
 
 ## Launcher flags
 
@@ -77,15 +83,15 @@ Filter values cannot contain whitespace; they are placed in one `--js-flags` str
 | `operand_scale` | `Single`, `Double`, or `Quadruple` | always |
 | `operands` | array | always |
 | `accumulator_type` | string | `full` and `summary` |
-| `accumulator` | JSON value | `full`; `summary` except string accumulators |
-| `accumulator_length` | int | `summary` when the accumulator is a string |
-| `registers` | array | `full` and `summary` when any operand register was read |
+| `accumulator` | JSON value | smi or number in `full` and `summary` |
+| `accumulator_length` | int | string accumulator in `full` or `summary` |
+| `registers` | array | not written by the hot path |
 
-Operand objects have `index` (int) and `type` (Ignition operand type name). Immediates and indexes put the number in `value`. Register operands put the register name in `name`. In `full` / `summary`, register objects in `registers` use `name`, `type`, and either `value` or, for summary strings, `value_length`. Constant-pool operands use `value` for the pool index and, outside `args-only`, `constant` / `constant_type` for the pool entry.
+Operand objects have `index` (int), `type`, and `value`. The hot path fills that only for `LdaSmi` and `LdaZero`. `accumulator_length` is the V8 string length (UTF-16 code units).
 
-String `accumulator_length` and `value_length` are V8 string lengths (UTF-16 code units). Truncation `original_size` is the UTF-8 byte size, or the full register count when the eight-register cap fired.
+`Ignition.drop` is a `call` in category `bytecode`. `args[0]` is `{"kind":"vm_step_drop","dropped":N}`.
 
-Schema v2 adds the usual singleton fields. `Ignition.step` does not pair a return event. `parent_id` is the active script activation when one is open.
+Schema v2 adds the usual singleton fields. `Ignition.step` does not pair a return event and is not a parent of later records. `parent_id` is the active script activation when one is open. `duration_us` is null.
 
 ## Dispatch-loop summary
 
@@ -95,6 +101,8 @@ Schema v2 adds the usual singleton fields. `Ignition.step` does not pair a retur
 - `dispatch_loops`: functions with at least 32 steps and a `JumpLoop`, and either a `SwitchOnSmiNoFeedback` / `SwitchOnGeneratorState` or a compare/jump chain with at least four distinct `LdaSmi` / `LdaZero` / numeric `LdaConstant` immediates
 
 Those immediates are reported as `guest_opcode_histogram`. This is a heuristic for a guest VM's opcode stream, not a lifted program. `hot_bytecode_offset` is the most frequent Ignition offset in that function (the dispatch PC when the loop is hot).
+
+The file reader folds `Ignition.step` into that summary as it goes and does not keep the step objects. Per-function groups, guest immediates, and offsets are capped. `scripts/validate_trace.py` likewise keeps at most 8192 Ignition records and checks the rest online (shape, schema, `global_seq`, parent, and depth) so a multi-million-step trace stays bounded. A trace with no Ignition records uses the same checks as before. `dropped` on the summary is the sum of `Ignition.drop` counts.
 
 ## Build and check on macOS
 
