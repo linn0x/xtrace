@@ -8,6 +8,7 @@ set -euo pipefail
 #   patches/0004-xtrace-schema-v2-browser.patch  -> chromium/src    (external boundaries)
 #   patches/0005-xtrace-ignition-step.patch -> chromium/src/v8       (Ignition steps)
 #   patches/0006-xtrace-ignition-step-blink.patch -> chromium/src    (bytecode events)
+#   patches/0007-xtrace-log-batching.patch -> chromium/src           (IPC and write batching)
 #
 # Run scripts/bootstrap_chromium.sh first so the tree is synced to the pinned
 # Chromium revision recorded in docs/chromium-build.md. The patches only apply
@@ -21,6 +22,7 @@ PATCH_CAUSALITY_RENDERER="$ROOT/patches/0003-xtrace-schema-v2-renderer.patch"
 PATCH_CAUSALITY_BROWSER="$ROOT/patches/0004-xtrace-schema-v2-browser.patch"
 PATCH_BYTECODE_V8="$ROOT/patches/0005-xtrace-ignition-step.patch"
 PATCH_BYTECODE_BLINK="$ROOT/patches/0006-xtrace-ignition-step-blink.patch"
+PATCH_LOG_BATCH="$ROOT/patches/0007-xtrace-log-batching.patch"
 
 ensure_git_tree() {
   local tree="$1" label="$2"
@@ -87,6 +89,7 @@ ensure_patch "$PATCH_CAUSALITY_RENDERER"
 ensure_patch "$PATCH_CAUSALITY_BROWSER"
 ensure_patch "$PATCH_BYTECODE_V8"
 ensure_patch "$PATCH_BYTECODE_BLINK"
+ensure_patch "$PATCH_LOG_BATCH"
 
 NATIVE_MODE="$(preflight_one "$SRC" "$PATCH_NATIVE")"
 V8_MODE="$(preflight_one "$SRC/v8" "$PATCH_V8")"
@@ -98,6 +101,8 @@ CAUSALITY_BROWSER_MODE="$(preflight_one "$SRC" "$PATCH_CAUSALITY_BROWSER")"
 apply_one "$SRC" "$PATCH_CAUSALITY_BROWSER" "$CAUSALITY_BROWSER_MODE"
 BYTECODE_BLINK_MODE="$(preflight_one "$SRC" "$PATCH_BYTECODE_BLINK")"
 apply_one "$SRC" "$PATCH_BYTECODE_BLINK" "$BYTECODE_BLINK_MODE"
+LOG_BATCH_MODE="$(preflight_one "$SRC" "$PATCH_LOG_BATCH")"
+apply_one "$SRC" "$PATCH_LOG_BATCH" "$LOG_BATCH_MODE"
 apply_one "$SRC/v8" "$PATCH_V8" "$V8_MODE"
 BYTECODE_V8_MODE="$(preflight_one "$SRC/v8" "$PATCH_BYTECODE_V8")"
 apply_one "$SRC/v8" "$PATCH_BYTECODE_V8" "$BYTECODE_V8_MODE"

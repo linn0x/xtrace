@@ -37,8 +37,13 @@ _PREAMBLE_TMPL = r"""
     _busy = true;
     try {
       let cs = "", cf = "";
-      const st = (new Error().stack || "").split("\n").slice(2);
-      for (const line of st) {
+      const st = new Error().stack || "";
+      let lineStart = 0, skipped = 0;
+      for (let i = 0; i <= st.length; i++) {
+        if (i !== st.length && st.charCodeAt(i) !== 10) continue;
+        if (skipped < 2) { skipped++; lineStart = i + 1; continue; }
+        const line = st.slice(lineStart, i);
+        lineStart = i + 1;
         const m = line.match(/(?:at\s+)?(.*?)\s*\(?(https?:\/\/[^\s):]+)/);
         if (m) { cf = (m[1] || "").trim(); cs = m[2]; break; }
       }
@@ -51,13 +56,15 @@ _PREAMBLE_TMPL = r"""
     _busy = false;
   };
   const CAP = __CAP__;   // hot-path values (crypto I/O) are kept whole up to CAP
+  const HEX = new Array(256);
+  for (let i = 0; i < 256; i++) HEX[i] = (i < 16 ? "0" : "") + i.toString(16);
   const preview = (v) => {
     try {
       if (typeof v === "string") return { type: "string", len: v.length, value: v.slice(0, CAP) };
       if (v instanceof ArrayBuffer) v = new Uint8Array(v);
       if (ArrayBuffer.isView(v)) {
         const u = new Uint8Array(v.buffer, v.byteOffset, Math.min(v.byteLength, CAP));
-        let hex = ""; for (const b of u) hex += b.toString(16).padStart(2, "0");
+        let hex = ""; for (let i = 0; i < u.length; i++) hex += HEX[u[i]];
         return { type: v.constructor.name, byteLength: v.byteLength, hex };
       }
       if (v && typeof v === "object") return { type: v.constructor ? v.constructor.name : "object" };

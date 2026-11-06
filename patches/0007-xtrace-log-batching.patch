@@ -1,0 +1,193 @@
+diff --git a/content/browser/xtrace/xtrace_host_impl.cc b/content/browser/xtrace/xtrace_host_impl.cc
+index db47da2..13a3ddc 100644
+--- a/content/browser/xtrace/xtrace_host_impl.cc
++++ b/content/browser/xtrace/xtrace_host_impl.cc
+@@ -183,15 +183,32 @@ void XTraceHostImpl::LogBatch(
+     return;
+   }
+ 
++  // One write for the whole IPC batch. global_seq is still stamped per line
++  // in arrival order, matching Log().
++  std::string block;
++  size_t bytes = 0;
++  for (const std::string& event_json : event_json_lines) {
++    if (!event_json.empty()) {
++      bytes += event_json.size() + 32;
++    }
++  }
++  block.reserve(bytes);
+   for (const std::string& event_json : event_json_lines) {
+     if (event_json.empty()) {
+       continue;
+     }
+-    if (!WriteJsonLine(trace_file_, StampGlobalSequenceForWrite(event_json),
+-                       "batch write failed")) {
+-      return;
++    std::string stamped = StampGlobalSequenceForWrite(event_json);
++    block.append(stamped);
++    if (stamped.empty() || stamped.back() != '\n') {
++      block.push_back('\n');
+     }
+   }
++  if (block.empty()) {
++    return;
++  }
++  if (!trace_file_.WriteAtCurrentPosAndCheck(base::as_byte_span(block))) {
++    DLogWriteFailureOnce("batch write failed");
++  }
+ }
+ 
+ void XTraceHostImpl::LogAsset(const std::string& content_path,
+diff --git a/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc b/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
+index 7496dff..307fa9f 100644
+--- a/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
++++ b/third_party/blink/renderer/platform/xtrace/xtrace_logger.cc
+@@ -52,13 +52,18 @@ constexpr char kCausalitySwitch[] = "xtrace-causality";
+ struct XTraceConfig {
+   bool enabled = false;
+   std::string categories = "reverse,fingerprint";
++  std::vector<std::string> category_tokens;
++  bool all_categories = false;
+   std::string capture_values = "full";
+   std::string capture_assets = "full";
+   std::string causality = "off";
+   std::string session_id;
++  std::string quoted_session_id;
+   std::string trace_stem;
+ };
+ 
++std::string QuoteJsonString(std::string_view value);
++
+ std::optional<base::FilePath> ReadTraceFilePathFromRuntime() {
+   const base::CommandLine* command_line =
+       base::CommandLine::ForCurrentProcess();
+@@ -126,6 +131,15 @@ XTraceConfig ReadConfigFromRuntime() {
+   config.causality =
+       ReadRuntimeString(kCausalitySwitch, kCausalityEnv).value_or("off");
+   config.session_id = MakeSessionId();
++  config.quoted_session_id = QuoteJsonString(config.session_id);
++  config.all_categories = config.categories == "all";
++  if (!config.all_categories) {
++    for (std::string_view token :
++         base::SplitStringPiece(config.categories, ",", base::TRIM_WHITESPACE,
++                                base::SPLIT_WANT_NONEMPTY)) {
++      config.category_tokens.emplace_back(token);
++    }
++  }
+   if (trace_file_path) {
+     config.trace_stem =
+         trace_file_path->BaseName().RemoveExtension().AsUTF8Unsafe();
+@@ -148,13 +162,10 @@ bool CategoryEnabled(const XTraceConfig& config, std::string_view category) {
+   if (!config.enabled || category.empty()) {
+     return false;
+   }
+-  if (config.categories == "all") {
++  if (config.all_categories) {
+     return true;
+   }
+-
+-  for (std::string_view token :
+-       base::SplitStringPiece(config.categories, ",", base::TRIM_WHITESPACE,
+-                              base::SPLIT_WANT_NONEMPTY)) {
++  for (const std::string& token : config.category_tokens) {
+     if (token == category) {
+       return true;
+     }
+@@ -379,13 +390,64 @@ std::string BuildScriptAssetFieldsAndSend(const XTraceConfig& config,
+   return fields;
+ }
+ 
+-mojom::blink::XTraceHost* GetXTraceHost() {
+-  thread_local mojo::Remote<mojom::blink::XTraceHost> host;
+-  if (!host.is_bound()) {
+-    Platform::Current()->GetBrowserInterfaceBroker()->GetInterface(
+-        host.BindNewPipeAndPassReceiver());
++// Coalesce renderer->browser Log IPCs. The pipe is thread-local and flushes
++// on size, before a bytecode batch, and from its destructor so process exit
++// does not drop the tail. Members die after ~TraceSender, so the remote is
++// still bound during that flush.
++constexpr size_t kEventBatchCount = 32;
++constexpr size_t kEventBatchBytes = 48 * 1024;
++
++struct TraceSender {
++  mojo::Remote<mojom::blink::XTraceHost> host;
++  std::vector<std::string> lines;
++  size_t bytes = 0;
++  bool flushing = false;
++
++  mojom::blink::XTraceHost* Get() {
++    if (!host.is_bound()) {
++      Platform::Current()->GetBrowserInterfaceBroker()->GetInterface(
++          host.BindNewPipeAndPassReceiver());
++    }
++    return host.get();
++  }
++
++  void Flush() {
++    if (flushing || lines.empty() || !host.is_bound()) {
++      return;
++    }
++    flushing = true;
++    Vector<String> batch;
++    for (std::string& line : lines) {
++      batch.push_back(String::FromUtf8(line));
++    }
++    lines.clear();
++    bytes = 0;
++    host->LogBatch(std::move(batch));
++    flushing = false;
++  }
++
++  void Enqueue(std::string line) {
++    bytes += line.size();
++    lines.push_back(std::move(line));
++    if (lines.size() >= kEventBatchCount || bytes >= kEventBatchBytes) {
++      Flush();
++    }
+   }
+-  return host.get();
++
++  ~TraceSender() { Flush(); }
++};
++
++TraceSender& EventSender() {
++  thread_local TraceSender sender;
++  return sender;
++}
++
++mojom::blink::XTraceHost* GetXTraceHost() {
++  return EventSender().Get();
++}
++
++void FlushPendingEvents() {
++  EventSender().Flush();
+ }
+ 
+ bool IsActivationTerminal(const char* phase, const char* api) {
+@@ -473,7 +535,7 @@ void LogEventWithSequence(const XTraceConfig& config,
+   line.append(",\"event_id\":");
+   line.append(QuoteJsonString(event_id));
+   line.append(",\"session_id\":");
+-  line.append(QuoteJsonString(config.session_id));
++  line.append(config.quoted_session_id);
+   line.append(",\"seq\":");
+   line.append(base::NumberToString(seq));
+   line.append(",\"session_seq\":");
+@@ -529,7 +591,7 @@ void LogEventWithSequence(const XTraceConfig& config,
+     batch->push_back(std::move(line));
+     return;
+   }
+-  GetXTraceHost()->Log(String::FromUtf8(line));
++  EventSender().Enqueue(std::move(line));
+ }
+ 
+ }  // namespace
+@@ -726,6 +788,8 @@ void XTraceLogger::LogBytecodeBatch(const String& payload) {
+   if (lines.empty()) {
+     return;
+   }
++  // General events buffered ahead of this bytecode batch must hit the file first.
++  FlushPendingEvents();
+   Vector<String> batch;
+   for (const std::string& line : lines) {
+     batch.push_back(String::FromUtf8(line));

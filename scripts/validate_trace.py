@@ -3533,6 +3533,178 @@ def _load_events_spilling_bytecode(path: Path, schema_version: int | None):
     return retained, bytecode_count, spilled, saw_step
 
 
+def _iter_trace_objects(path: Path):
+    """Yield (1-based index, event) for every JSON object, without retaining them."""
+    index = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise TraceValidationError(
+                    f"Malformed JSON on line {line_number}: {exc}"
+                ) from exc
+            if not isinstance(event, dict):
+                raise TraceValidationError(f"Expected object on line {line_number}")
+            index += 1
+            yield index, event
+
+
+def _trace_needs_bodies(
+    *,
+    require_stack_for,
+    require_context_for,
+    require_vmp_families,
+    require_arg_fields,
+    require_vmp_next_hook_fields,
+    require_business_api_records,
+    require_signature_param_materialization,
+    require_complete_values,
+    require_vmp_family_evidence,
+    require_material_refs,
+) -> bool:
+    return bool(
+        require_stack_for
+        or require_context_for
+        or require_vmp_families
+        or require_arg_fields
+        or require_vmp_next_hook_fields
+        or require_business_api_records
+        or require_signature_param_materialization
+        or require_complete_values
+        or require_vmp_family_evidence
+        or require_material_refs
+    )
+
+
+def _stream_global_sequence(path: Path) -> None:
+    """Same results as validate_global_sequence, without keeping event bodies."""
+    missing: list[str] = []
+    saw = False
+    previous = 0
+    monotonic_error: str | None = None
+    for index, event in _iter_trace_objects(path):
+        if "global_seq" not in event:
+            if len(missing) < 20:
+                missing.append(str(index))
+            continue
+        saw = True
+        if monotonic_error is not None:
+            continue
+        value = event.get("global_seq")
+        if not isinstance(value, int) or isinstance(value, bool):
+            monotonic_error = f"Event {index} has non-integer global_seq field"
+            continue
+        if value <= previous:
+            monotonic_error = (
+                f"Event {index} has non-monotonic global_seq: {value} <= {previous}"
+            )
+            continue
+        previous = value
+    if not saw:
+        return
+    if missing:
+        raise TraceValidationError(
+            "Partial global_seq coverage; missing event indexes: " + ", ".join(missing)
+        )
+    if monotonic_error:
+        raise TraceValidationError(monotonic_error)
+
+
+def _stream_causality(path: Path) -> None:
+    """Same results as validate_causality, without keeping event bodies."""
+    nodes: dict[str, tuple[int, int]] = {}
+    pairs: dict[str, dict] = {}
+    for index, event in _iter_trace_objects(path):
+        kind = event["causality_kind"]
+        if kind == "external":
+            continue
+        call_id = event["call_id"]
+        parent_id = event["parent_id"]
+        depth = event["depth"]
+        phase = event["phase"]
+        is_paired_call = kind == "paired" and phase == "call"
+        is_paired_terminal = kind == "paired" and phase in {"return", "exception"}
+        if kind == "paired" and not (is_paired_call or is_paired_terminal):
+            raise TraceValidationError(
+                f"Event {index} paired record must be call, return, or exception"
+            )
+        if kind == "paired" and is_paired_call and event["duration_us"] is not None:
+            raise TraceValidationError(f"Event {index} paired call must have duration_us=null")
+        if kind == "paired" and is_paired_terminal and event["duration_us"] is None:
+            raise TraceValidationError(f"Event {index} paired terminal needs duration_us")
+        if is_paired_terminal:
+            pair = pairs.get(call_id)
+            if pair is None:
+                raise TraceValidationError(f"Event {index} has orphan paired terminal {call_id}")
+            if pair.get("terminal_index") is not None:
+                raise TraceValidationError(f"Event {index} has duplicate paired terminal {call_id}")
+            if (
+                pair["api"] != event["api"]
+                or pair["parent_id"] != parent_id
+                or pair["depth"] != depth
+            ):
+                raise TraceValidationError(f"Event {index} paired terminal disagrees with its call")
+            pair["terminal_index"] = index
+            continue
+        if call_id in nodes:
+            raise TraceValidationError(f"Event {index} reuses causal call_id {call_id}")
+        if parent_id is None:
+            if depth != 0:
+                raise TraceValidationError(f"Event {index} root causal node must have depth 0")
+        else:
+            parent_session, separator, _ = parent_id.rpartition(":")
+            if not separator or parent_session != event["session_id"]:
+                raise TraceValidationError(f"Event {index} crosses producer sessions")
+            parent = nodes.get(parent_id)
+            if parent is None:
+                raise TraceValidationError(f"Event {index} has missing or forward parent {parent_id}")
+            if depth != parent[1] + 1:
+                raise TraceValidationError(f"Event {index} depth does not follow parent {parent_id}")
+        nodes[call_id] = (index, depth)
+        if is_paired_call:
+            pairs[call_id] = {
+                "api": event["api"],
+                "parent_id": parent_id,
+                "depth": depth,
+                "terminal_index": None,
+            }
+    unclosed = [call_id for call_id, pair in pairs.items() if pair["terminal_index"] is None]
+    if unclosed:
+        raise TraceValidationError("Unclosed paired activations: " + ", ".join(unclosed[:20]))
+
+
+def _stream_validate_trace(path: Path, expected: Iterable[str], schema_version: int | None) -> None:
+    """Schema and API checks that do not need to retain event bodies."""
+    saw_any = False
+    seen: set = set()
+    for index, event in _iter_trace_objects(path):
+        saw_any = True
+        validate_bytecode_event(event, index)
+        api = event.get("api")
+        if api is not None:
+            seen.add(api)
+    if not saw_any:
+        raise TraceValidationError(f"No events found in {path}")
+    if schema_version is not None:
+        if schema_version not in (1, 2):
+            raise TraceValidationError(f"Unsupported schema version: {schema_version}")
+        for index, event in _iter_trace_objects(path):
+            if schema_version == 1:
+                validate_schema_v1_event(event, index)
+            else:
+                validate_schema_v2_event(event, index)
+        _stream_global_sequence(path)
+        if schema_version == 2:
+            _stream_causality(path)
+    missing = [api for api in expected if api not in seen]
+    if missing:
+        raise TraceValidationError("Missing expected APIs: " + ", ".join(missing))
+
+
 def validate_trace(
     path: Path,
     expected: Iterable[str] = DEFAULT_EXPECTED_APIS,
@@ -3548,15 +3720,24 @@ def validate_trace(
     require_vmp_family_evidence: bool = False,
     require_material_refs: bool = False,
 ) -> None:
-    retained, bytecode_count, spilled, saw_step = _load_events_spilling_bytecode(
+    if not _trace_needs_bodies(
+        require_stack_for=require_stack_for,
+        require_context_for=require_context_for,
+        require_vmp_families=require_vmp_families,
+        require_arg_fields=require_arg_fields,
+        require_vmp_next_hook_fields=require_vmp_next_hook_fields,
+        require_business_api_records=require_business_api_records,
+        require_signature_param_materialization=require_signature_param_materialization,
+        require_complete_values=require_complete_values,
+        require_vmp_family_evidence=require_vmp_family_evidence,
+        require_material_refs=require_material_refs,
+    ):
+        _stream_validate_trace(path, expected, schema_version)
+        return
+    retained, _bytecode_count, spilled, saw_step = _load_events_spilling_bytecode(
         path, schema_version
     )
-    # Traces with no (or few) Ignition records keep the historical loader so
-    # indexes, _file_index, and every bulk check stay identical.
-    if bytecode_count <= _BYTECODE_RETAIN_CAP:
-        events = load_events(path)
-    else:
-        events = retained
+    events = retained
     for index, event in enumerate(events, start=1):
         validate_bytecode_event(event, index)
     if schema_version is not None:

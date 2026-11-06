@@ -1972,7 +1972,7 @@ def summarize(
     bytecode_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     markers = profile_marker_params(profile, marker_params)
-    api_counts = Counter(str(event.get("api", "")) for event in events)
+    api_counts: Counter[str] = Counter()
     script_registry = build_script_registry(events)
     marker_occurrences: list[dict[str, Any]] = []
     signed_urls: list[dict[str, Any]] = []
@@ -1985,6 +1985,7 @@ def summarize(
 
     for event in events:
         api = str(event.get("api", ""))
+        api_counts[api] += 1
         resolved_callsite = resolve_dispatch_callsite(event, script_registry)
         if resolved_callsite:
             if resolved_callsite.get("resolved"):

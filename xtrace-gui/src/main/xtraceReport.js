@@ -13,6 +13,7 @@ const DEFAULT_EXTERNAL_SCRIPT_MAX_BYTES = 2 * 1024 * 1024;
 const DEFAULT_EXTERNAL_SCRIPT_TIMEOUT_MS = 6000;
 const MAX_RUNTIME_VALUE_REF_CHARS = 160;
 const URLS_FROM_EVENT_CACHE = new WeakMap();
+const EVENT_PAYLOAD_TEXT_CACHE = new WeakMap();
 const NETWORK_REQUEST_INFO_CACHE = new WeakMap();
 const NETWORK_INFO_FROM_ENDPOINT_CACHE = new Map();
 const FINGERPRINT_API_PREFIXES = [
@@ -1080,8 +1081,17 @@ function preserveSignatureValues(value) {
   return value;
 }
 
-function signatureTermsInEvent(event) {
+function eventPayloadText(event) {
+  if (!event || typeof event !== "object") return "";
+  const cached = EVENT_PAYLOAD_TEXT_CACHE.get(event);
+  if (cached !== undefined) return cached;
   const text = JSON.stringify([event.args, event.result, event.error]);
+  EVENT_PAYLOAD_TEXT_CACHE.set(event, text);
+  return text;
+}
+
+function signatureTermsInEvent(event) {
+  const text = eventPayloadText(event);
   return SIGNATURE_TERMS.filter((term) => text.includes(term));
 }
 
@@ -20894,48 +20904,16 @@ function appendTraceEventsWithIndex(events, parsed, startIndex) {
 }
 
 function readTraceEvents(tracePath, options = {}) {
-  if (!fs.existsSync(tracePath)) return [];
-  const stat = fs.statSync(tracePath);
-  const maxBytes = options.maxBytes || DEFAULT_TRACE_REPORT_MAX_BYTES;
-  const length = Math.min(stat.size, maxBytes);
-  const chunkBytes = Math.max(1, Math.min(options.chunkBytes || DEFAULT_TRACE_READ_CHUNK_BYTES, Math.max(length, 1)));
-  const fd = fs.openSync(tracePath, "r");
-  try {
-    const events = [];
-    const buffer = Buffer.allocUnsafe(chunkBytes);
-    const decoder = new StringDecoder("utf8");
-    let offset = 0;
-    let pending = "";
-    let traceIndex = 0;
-
-    while (offset < length) {
-      const bytesToRead = Math.min(chunkBytes, length - offset);
-      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, offset);
-      if (bytesRead <= 0) break;
-      offset += bytesRead;
-
-      const text = pending + decoder.write(buffer.subarray(0, bytesRead));
-      const lastNewline = text.lastIndexOf("\n");
-      if (lastNewline === -1) {
-        pending = text;
-        continue;
-      }
-
-      const completeText = text.slice(0, lastNewline + 1);
-      traceIndex = appendTraceEventsWithIndex(events, parseNdjsonLines(completeText), traceIndex);
-      pending = text.slice(lastNewline + 1);
-    }
-
-    if (length >= stat.size) {
-      pending += decoder.end();
-      if (pending.trim()) {
-        appendTraceEventsWithIndex(events, parseNdjsonLines(pending), traceIndex);
-      }
-    }
-    return events;
-  } finally {
-    fs.closeSync(fd);
-  }
+  const events = [];
+  const scanOptions = options.maxBytes !== undefined
+    ? options
+    : {...options, maxBytes: DEFAULT_TRACE_REPORT_MAX_BYTES};
+  scanTraceLines(tracePath, scanOptions, (line, traceIndex) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    events.push(parseTraceLine(trimmed, traceIndex));
+  });
+  return events;
 }
 
 function parseTraceLine(line, traceIndex) {

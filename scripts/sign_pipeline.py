@@ -198,29 +198,92 @@ def request_carriers(url, headers, body_text, min_entropy, raw_names=()):
     return out
 
 
+def _request_from_line(line: bytes):
+    """Parse one NDJSON line into a request tuple, or None."""
+    is_req = b"BrowserNetwork.request" in line
+    is_ws = b'"WebSocket.send"' in line
+    if not (is_req or is_ws):
+        return None
+    try:
+        e = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    a = (e.get("args") or [{}])[0]
+    if not isinstance(a, dict):
+        return None
+    if e.get("api") == "WebSocket.send":
+        payload = a.get("data") or a.get("message") or a.get("payload") or ""
+        body = payload if isinstance(payload, str) else decode_body(payload)
+        return e.get("mono_time_us"), a.get("url", ""), [], body, e
+    return (e.get("mono_time_us"), a.get("url", ""), a.get("headers", []),
+            decode_body(a.get("upload_body")), e)
+
+
 def iter_requests(trace: Path):
     """Yield (mono, url, headers, body_text, event) for HTTP requests and WS sends."""
     with trace.open("rb") as fh:
         for line in fh:
-            is_req = b"BrowserNetwork.request" in line
-            is_ws = b'"WebSocket.send"' in line
-            if not (is_req or is_ws):
-                continue
-            try:
-                e = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            a = (e.get("args") or [{}])[0]
-            if not isinstance(a, dict):
-                continue
-            if e.get("api") == "WebSocket.send":
-                # treat the frame payload like a body; url = socket url if present
-                payload = a.get("data") or a.get("message") or a.get("payload") or ""
-                body = payload if isinstance(payload, str) else decode_body(payload)
-                yield e.get("mono_time_us"), a.get("url", ""), [], body, e
-            else:
-                yield (e.get("mono_time_us"), a.get("url", ""), a.get("headers", []),
-                       decode_body(a.get("upload_body")), e)
+            parsed = _request_from_line(line)
+            if parsed is not None:
+                yield parsed
+
+
+def _mono_from_line(line: bytes):
+    match = MONO_RE.search(line)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _line_has_material(line: bytes, mono: float) -> bool:
+    if b'"inject"' not in line:
+        return False
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return False
+    if event.get("category") != "inject":
+        return False
+    args = event.get("args")
+    if not (isinstance(args, list) and args and isinstance(args[0], dict)):
+        return False
+    return any(isinstance(value, str) and len(value) >= MATERIAL_MIN_LEN
+               for value in args[0].values())
+
+
+def index_trace(trace: Path, families):
+    """One pass: requests, compute monos, material monos, and wasm-boundary count.
+
+    Same rows as iter_requests, collect_compute_monos, and find_material_monos.
+    """
+    markers = tuple(compute_markers(families))
+    wasm_markers = tuple(compute_markers(["wasm"]))
+    requests = []
+    compute_monos = []
+    material_monos = []
+    wasm_events = 0
+    with trace.open("rb") as handle:
+        for line in handle:
+            parsed = _request_from_line(line)
+            if parsed is not None:
+                requests.append(parsed)
+            if markers and any(marker in line for marker in markers):
+                mono = _mono_from_line(line)
+                if mono is not None:
+                    compute_monos.append(mono)
+            if wasm_markers and any(marker in line for marker in wasm_markers):
+                if _mono_from_line(line) is not None:
+                    wasm_events += 1
+            if b'"inject"' in line:
+                mono = _mono_from_line(line)
+                if mono is not None and _line_has_material(line, mono):
+                    material_monos.append(mono)
+    compute_monos.sort()
+    material_monos.sort()
+    return requests, compute_monos, material_monos, wasm_events
 
 
 def collect_compute_monos(trace: Path, families):
@@ -1398,13 +1461,17 @@ def render_algo_spec_md(spec):
 
 # ------------------------------- discover -------------------------------
 
-def find_carriers(trace: Path, window_ms, min_entropy, top, families, hint_names=()):
+def find_carriers(trace: Path, window_ms, min_entropy, top, families, hint_names=(), *, indexed=None):
     """Rank token carriers name-free: entropy + per-request variance + preceding
     compute burst. Names in hint_names are captured raw and score-weighted, so
     known signature params beat noise (and structured tokens are not dropped)."""
     hints = {n.lower() for n in hint_names}
     seen = collections.defaultdict(lambda: {"values": [], "where": set(), "monos": []})
-    for mono, url, headers, body_text, _ in iter_requests(trace):
+    if indexed is None:
+        requests, comp, _material, _wasm = index_trace(trace, families)
+    else:
+        requests, comp = indexed
+    for mono, url, headers, body_text, _ in requests:
         for name, val, where in request_carriers(url, headers, body_text, min_entropy,
                                                   raw_names=hint_names):
             rec = seen[name]
@@ -1413,7 +1480,6 @@ def find_carriers(trace: Path, window_ms, min_entropy, top, families, hint_names
             rec["monos"].append(mono)
     if not seen:
         return []
-    comp = collect_compute_monos(trace, families)
 
     def burst(mono):
         if mono is None or not comp:
@@ -1442,10 +1508,11 @@ def find_carriers(trace: Path, window_ms, min_entropy, top, families, hint_names
 def cmd_discover(args):
     fams = parse_families(args.compute_families)
     hints = tuple(args.carrier_hint) or DEFAULT_CARRIER_HINTS
-    cands = find_carriers(args.trace, args.window_ms, args.min_entropy, args.top, fams, hints)
+    requests, comp, _material, wasm_events = index_trace(args.trace, fams)
+    cands = find_carriers(args.trace, args.window_ms, args.min_entropy, args.top, fams, hints,
+                          indexed=(requests, comp))
     # WASM presence: if a page instantiates WASM, a carrier with no JS compute
     # burst may be WASM-signed (per-call JS<->WASM capture is not yet available).
-    wasm_events = len(collect_compute_monos(args.trace, ["wasm"]))
     report = {"trace": str(args.trace), "window_ms": args.window_ms,
               "min_entropy": args.min_entropy, "compute_families": fams,
               "wasm_boundary_events": wasm_events,
@@ -1464,9 +1531,11 @@ def cmd_discover(args):
 def cmd_explain(args):
     fams = parse_families(args.compute_families)
     hints = tuple(args.carrier_hint) or DEFAULT_CARRIER_HINTS
+    requests, comp, mats, _wasm = index_trace(args.trace, fams)
     carrier = args.carrier
     if not carrier:
-        cands = find_carriers(args.trace, args.window_ms, args.min_entropy, 1, fams, hints)
+        cands = find_carriers(args.trace, args.window_ms, args.min_entropy, 1, fams, hints,
+                              indexed=(requests, comp))
         if not cands:
             print("No token carrier auto-discovered; pass --carrier NAME", file=sys.stderr)
             return 2
@@ -1475,7 +1544,7 @@ def cmd_explain(args):
 
     raw_names = set(hints) | {carrier}
     matches = []
-    for mono, url, headers, body_text, e in iter_requests(args.trace):
+    for mono, url, headers, body_text, e in requests:
         names = {n for n, _, _ in request_carriers(url, headers, body_text, args.min_entropy,
                                                     raw_names=raw_names)}
         if (carrier in names or f"{carrier}=" in (url or "")
@@ -1486,7 +1555,6 @@ def cmd_explain(args):
     # material, so the anchored window actually contains the preimage candidates a
     # replay must re-derive from (manual --anchor-index otherwise).
     if getattr(args, "anchor_select", "index") == "material" and matches:
-        mats = find_material_monos(args.trace)
         win = args.window_ms * 1000.0
         best_i, best_n = args.anchor_index, -1
         for i, mm in enumerate(matches):
